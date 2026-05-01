@@ -21,11 +21,19 @@ def open_gemini(browser):
 
 
 def send_message(page: Page, message: str) -> str:
-    # type message
+    # type message — retry up to 3× in case the editor is temporarily non-editable
+    # (Gemini locks the input while a response is streaming)
     editor = page.locator(SELECTORS["input"])
-    editor.wait_for(state="visible", timeout=15000)
-    editor.click()
-    editor.fill(message)
+    for attempt in range(3):
+        try:
+            editor.wait_for(state="visible", timeout=15000)
+            editor.click()
+            editor.fill(message)
+            break
+        except PlaywrightTimeout:
+            if attempt == 2:
+                raise
+            time.sleep(3)
 
     # send
     page.keyboard.press("Enter")

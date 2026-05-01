@@ -83,6 +83,10 @@ Rules:
 - NEVER ask for permission before using a tool. Do not say "Should I run X?",
   "Do you want me to proceed?", "Shall I apply this fix?", or any similar phrase.
   Emit the tool block immediately and let the result speak for itself.
+- NEVER ask the user to fetch information you can obtain yourself. Do not say
+  "What does the log show?", "Check your console", "Can you run X and tell me
+  the output?", or any similar phrase. If you need a file, read it. If you need
+  command output, run it. You have bash — use it.
 - Do not ask clarifying questions — make reasonable assumptions and proceed.
 """
 
@@ -166,13 +170,25 @@ def strip_tool_blocks(text: str) -> str:
 def execute_tool(call: dict) -> str:
     name = call.get("name")
     if name == "bash":
-        return run_bash(call["command"], cwd=call.get("cwd"))
+        cmd = call.get("command")
+        if not cmd:
+            return "Error: bash tool requires a 'command' field"
+        return run_bash(cmd, cwd=call.get("cwd"))
     elif name == "read_file":
-        return read_file(call["path"])
+        path = call.get("path")
+        if not path:
+            return "Error: read_file requires a 'path' field"
+        return read_file(path)
     elif name == "write_file":
-        return write_file(call["path"], call["content"])
+        path, content = call.get("path"), call.get("content")
+        if not path or content is None:
+            return "Error: write_file requires 'path' and 'content' fields"
+        return write_file(path, content)
     elif name == "edit_file":
-        return edit_file(call["path"], call["old"], call["new"])
+        path, old, new = call.get("path"), call.get("old"), call.get("new")
+        if not path or old is None or new is None:
+            return "Error: edit_file requires 'path', 'old', and 'new' fields"
+        return edit_file(path, old, new)
     elif name == "list_dir":
         return list_dir(call.get("path", "."))
     else:
@@ -225,9 +241,13 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
     else:
         full_message = user_message
 
-    print(c("  thinking...", DIM), end="\r")
-    response = send_fn(full_message)
-    print("              ", end="\r")  # clear "thinking..."
+    try:
+        print(c("  thinking...", DIM), end="\r")
+        response = send_fn(full_message)
+        print("              ", end="\r")  # clear "thinking..."
+    except Exception as e:
+        print(c(f"\n  [browser error on send: {e}]\n", RED))
+        return
 
     max_tool_turns = 20
     turn = 0
@@ -245,18 +265,25 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
         results = []
         for call in tool_calls:
             print_tool_call(call)
-            result = execute_tool(call)
+            try:
+                result = execute_tool(call)
+            except Exception as e:
+                result = f"Error executing tool '{call.get('name', '?')}': {e}"
             print_tool_result(result)
-            results.append({"tool": call["name"], "result": result})
+            results.append({"tool": call.get("name", "?"), "result": result})
 
         # feed results back
         result_text = "\n".join(
             f"Tool `{r['tool']}` result:\n```\n{r['result']}\n```"
             for r in results
         )
-        print(c("  thinking...", DIM), end="\r")
-        response = send_fn(result_text)
-        print("              ", end="\r")
+        try:
+            print(c("  thinking...", DIM), end="\r")
+            response = send_fn(result_text)
+            print("              ", end="\r")
+        except Exception as e:
+            print(c(f"\n  [browser error on tool result: {e}]\n", RED))
+            break
         turn += 1
 
     if turn >= max_tool_turns:

@@ -21,11 +21,18 @@ def open_chatgpt(browser):
 
 
 def send_message(page: Page, message: str) -> str:
-    # type message
+    # type message — retry up to 3× in case the textarea is temporarily non-editable
     textarea = page.locator(SELECTORS["input"])
-    textarea.wait_for(state="visible", timeout=15000)
-    textarea.click()
-    textarea.fill(message)
+    for attempt in range(3):
+        try:
+            textarea.wait_for(state="visible", timeout=15000)
+            textarea.click()
+            textarea.fill(message)
+            break
+        except PlaywrightTimeout:
+            if attempt == 2:
+                raise
+            time.sleep(3)
 
     # send
     page.keyboard.press("Enter")
