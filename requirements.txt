@@ -1,0 +1,2 @@
+playwright>=1.44.0
+prompt_toolkit>=3.0.0
