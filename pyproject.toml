@@ -6,10 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "browser-llm-agent"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["playwright>=1.44.0", "mcp>=1.0.0"]
+dependencies = ["playwright>=1.44.0", "mcp>=1.0.0", "anthropic>=0.40.0"]
 
 [project.scripts]
-rawagent = "browser_llm_agent.cli:main"
+rawagent   = "browser_llm_agent.cli:main"
+rawagent-serve = "browser_llm_agent.api_server:main"
+claude-raw = "browser_llm_agent.claude_raw:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

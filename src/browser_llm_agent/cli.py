@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-browser-llm-agent: interactive coding shell powered by ChatGPT or Gemini.
+browser-llm-agent: interactive coding shell powered by ChatGPT, Gemini, or Claude.
 
 Usage:
-    python agent.py --llm chatgpt
-    python agent.py --llm gemini
+    python -m browser_llm_agent.cli --llm claude    # Anthropic API (no browser needed)
+    python -m browser_llm_agent.cli --llm chatgpt
+    python -m browser_llm_agent.cli --llm gemini
 """
 
 import argparse
@@ -15,10 +16,6 @@ import re
 import sys
 import time
 
-from playwright.sync_api import sync_playwright
-
-from browser_llm_agent.llm.chatgpt import open_chatgpt, send_message as chatgpt_send, new_conversation as chatgpt_new
-from browser_llm_agent.llm.gemini import open_gemini, send_message as gemini_send, new_conversation as gemini_new
 from browser_llm_agent.tools.file_tools import read_file, write_file, edit_file, list_dir
 from browser_llm_agent.tools.bash_tools import run_bash
 from browser_llm_agent.tools.search_tools import (
@@ -27,6 +24,17 @@ from browser_llm_agent.tools.search_tools import (
 from browser_llm_agent.tools.todo_tools import todo_add, todo_list, todo_update, todo_delete
 from browser_llm_agent.tools.memory_tools import memory_save, memory_get, memory_list, memory_search, memory_delete
 from browser_llm_agent.mcp_client import MCPManager
+
+# Claude backend (only imported when --llm claude is used)
+try:
+    from browser_llm_agent.llm.claude import (
+        create_client as claude_create_client,
+        tools_with_mcp as claude_tools_with_mcp,
+        SYSTEM_PROMPT as CLAUDE_SYSTEM_PROMPT,
+    )
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    CLAUDE_AVAILABLE = False
 
 
 # ── ANSI colors ──────────────────────────────────────────────────────────────
@@ -79,18 +87,64 @@ Available tools:
 - memory_search: search memories by keyword      {"name": "memory_search", "query": "..."}
 - memory_delete: delete a memory                 {"name": "memory_delete", "key": "..."}
 
-Rules:
-- Use one tool at a time. Wait for result before next.
+Debugging methodology — follow this for every bug:
+
+  1. OBSERVE   Run list_dir to understand the project layout. Then grep or glob
+               to locate the relevant files. Read them. If the bug involves
+               runtime behaviour, use bash to run the code and capture actual
+               output BEFORE reading anything else.
+
+  2. HYPOTHESIZE  State a specific theory. "The bug is X because Y."
+               Do not proceed without a theory grounded in observed evidence.
+
+  3. EXPERIMENT  Use bash to verify or falsify the theory cheaply before
+               changing production code. Print the suspect value. Run a
+               minimal reproduction. Check a log file.
+
+  4. FIX       Apply one targeted edit_file change. Keep it minimal.
+
+  5. VERIFY    Use bash to confirm the fix works. Re-run the reproduction
+               from step 3 or run the test suite.
+
+Auto-detection rules — NEVER ask; detect instead:
+- Framework/language: read package.json, pyproject.toml, go.mod, Cargo.toml,
+  pom.xml, build.gradle, requirements.txt, or look at file extensions.
+- Entry point: check common names (index.ts, main.py, app.py, server.ts, main.go,
+  src/main.rs) via glob or find_files.
+- Routes/handlers: grep for "app.get", "router.", "@app.route", "handler", etc.
+- Config: glob for *.config.*, .env, docker-compose.yml, etc.
+- Any other project detail: use bash, grep, or glob to discover it.
+
+Absolute prohibitions — NEVER output any of these phrases:
+- "What framework are you using?"
+- "What language is this?"
+- "What file is X in?"
+- "Which block should I look at?"
+- "Would you like me to look at X?"
+- "Should I check X?"
+- "Do you want me to proceed?"
+- "Shall I apply this fix?"
+- "Can you run X and tell me the output?"
+- "Check your console"
+- "What does the log show?"
+- "Could you share X?"
+- "Please provide X"
+- Any question whose answer you can obtain with a tool.
+
+Core rules:
+- NEVER ask for permission before using a tool. Emit the tool block immediately.
+- NEVER ask the user to fetch information you can obtain yourself. If you need
+  a file, read it. If you need command output, run it. You have bash — use it.
+- NEVER offer to do something — just do it. "Would you like me to look at X?"
+  must become a read_file or grep call, not a question.
+- NEVER describe a fix in text — execute it with edit_file or write_file.
+  Describing what you "would" change is not acceptable.
+- Do not ask clarifying questions. Make the most reasonable assumption and act.
 - Always read a file before editing it.
-- When you are done with all steps, just say so in plain text — do NOT use a special done tool.
-- If a command fails, diagnose and fix.
-- Do not ask clarifying questions — make reasonable assumptions and proceed.
-- Keep responses concise. For code, show the full file content only when necessary.
-- When given a bug, error, API failure, or curl issue — ALWAYS use grep or glob to find the relevant source file first. Never answer from the error message alone without grounding your answer in actual code.
-- When asked to fix something, always locate the file, read it, then fix it. Do not guess file paths.
-- Start every debugging task with: list_dir to understand the project structure, then grep for the relevant symbol or route.
-- NEVER just describe a fix in text — always execute it using edit_file or write_file. Describing what you "would" change is not acceptable. Make the change.
-- After making a fix, confirm by reading the edited section of the file back.
+- After making a fix, confirm by reading the edited section back.
+- Use one tool at a time. Wait for result before next.
+- When you are done with all steps, say so in plain text. Do not use a special done tool.
+- Keep responses concise. Show full file content only when strictly necessary.
 """
 
 
@@ -308,6 +362,111 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
         print(c("  [reached max tool turns]", RED))
 
 
+# ── Claude native tool-use loop ───────────────────────────────────────────────
+
+def claude_agent_turn(client, tools: list, messages: list, user_message: str,
+                      mcp_manager: MCPManager | None = None):
+    """One user turn using Claude's native tool calling. Mutates `messages` in place."""
+    messages.append({"role": "user", "content": user_message})
+
+    max_turns = 20
+    for _ in range(max_turns):
+        print(c("  thinking...", DIM), end="\r", flush=True)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8096,
+            system=CLAUDE_SYSTEM_PROMPT,
+            tools=tools,
+            messages=messages,
+        )
+        print("              ", end="\r", flush=True)
+
+        # Add assistant response to history
+        messages.append({"role": "assistant", "content": response.content})
+
+        # Split content into text and tool_use blocks
+        text_blocks = [b for b in response.content if b.type == "text"]
+        tool_uses  = [b for b in response.content if b.type == "tool_use"]
+
+        # Print any prose
+        for block in text_blocks:
+            if block.text.strip():
+                print(f"\n{c(block.text.strip(), GREEN)}\n")
+
+        if not tool_uses:
+            break
+
+        # Execute tools and collect results
+        tool_results = []
+        for tu in tool_uses:
+            call = {"name": tu.name, **tu.input}
+            print_tool_call(call)
+            result = execute_tool(call, mcp_manager)
+            print_tool_result(result)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tu.id,
+                "content": result,
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+    else:
+        print(c("  [reached max tool turns]", RED))
+
+
+def claude_shell(mcp_manager: MCPManager | None = None):
+    """Interactive shell backed by the Claude API — no browser required."""
+    if not CLAUDE_AVAILABLE:
+        print(c("  Error: 'anthropic' package not installed. Run: pip install anthropic", RED))
+        return
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print(c("  Error: ANTHROPIC_API_KEY environment variable not set.", RED))
+        return
+
+    client = claude_create_client(api_key)
+    tools  = claude_tools_with_mcp(mcp_manager)
+    messages: list = []
+
+    print_header("claude")
+
+    history_file = os.path.expanduser("~/.llm-agent/history")
+    os.makedirs(os.path.dirname(history_file), exist_ok=True)
+    try:
+        readline.read_history_file(history_file)
+    except FileNotFoundError:
+        pass
+    readline.set_history_length(1000)
+
+    while True:
+        try:
+            user_input = input("you [claude]> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        finally:
+            readline.write_history_file(history_file)
+
+        if not user_input:
+            continue
+
+        if user_input.startswith("/"):
+            cmd = user_input.lower()
+            if cmd in ("/quit", "/exit", "/q"):
+                break
+            elif cmd == "/new":
+                messages.clear()
+                print(c("  Started fresh conversation.\n", DIM))
+            elif cmd == "/help":
+                print_header("claude")
+            else:
+                print(c(f"  Unknown command: {user_input}\n", RED))
+            continue
+
+        claude_agent_turn(client, tools, messages, user_input, mcp_manager)
+
+
 # ── Main interactive shell ────────────────────────────────────────────────────
 
 def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str,
@@ -385,11 +544,29 @@ def main():
     parser = argparse.ArgumentParser(description="Browser LLM Coding Agent")
     parser.add_argument(
         "--llm",
-        choices=["chatgpt", "gemini", "both"],
+        choices=["chatgpt", "gemini", "both", "claude"],
         default="gemini",
-        help="Which LLM to use (default: gemini)",
+        help="Which LLM to use (default: gemini). 'claude' uses the Anthropic API directly — no browser needed.",
     )
     args = parser.parse_args()
+
+    # ── Claude path: no browser required ─────────────────────────────────────
+    if args.llm == "claude":
+        mcp_manager = MCPManager()
+        n = mcp_manager.load_and_connect(status_cb=lambda msg: print(c(msg, DIM)))
+        if n:
+            print(c(f"  {n} MCP server(s) ready\n", DIM))
+        try:
+            claude_shell(mcp_manager)
+        finally:
+            mcp_manager.stop_all()
+            print(c("\nBye.\n", DIM))
+        return
+
+    # ── Browser path: ChatGPT / Gemini ────────────────────────────────────────
+    from playwright.sync_api import sync_playwright
+    from browser_llm_agent.llm.chatgpt import open_chatgpt, send_message as chatgpt_send, new_conversation as chatgpt_new
+    from browser_llm_agent.llm.gemini import open_gemini, send_message as gemini_send, new_conversation as gemini_new
 
     with sync_playwright() as p:
         # Expose CDP on a fixed port so chrome-devtools-mcp can connect to this browser
