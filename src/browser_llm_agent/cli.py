@@ -10,14 +10,10 @@ Usage:
 import argparse
 import json
 import os
+import readline
 import re
 import sys
 import time
-
-from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
-from prompt_toolkit.formatted_text import FormattedText
 
 from playwright.sync_api import sync_playwright
 
@@ -30,6 +26,7 @@ from browser_llm_agent.tools.search_tools import (
 )
 from browser_llm_agent.tools.todo_tools import todo_add, todo_list, todo_update, todo_delete
 from browser_llm_agent.tools.memory_tools import memory_save, memory_get, memory_list, memory_search, memory_delete
+from browser_llm_agent.mcp_client import MCPManager
 
 
 # ── ANSI colors ──────────────────────────────────────────────────────────────
@@ -89,6 +86,11 @@ Rules:
 - If a command fails, diagnose and fix.
 - Do not ask clarifying questions — make reasonable assumptions and proceed.
 - Keep responses concise. For code, show the full file content only when necessary.
+- When given a bug, error, API failure, or curl issue — ALWAYS use grep or glob to find the relevant source file first. Never answer from the error message alone without grounding your answer in actual code.
+- When asked to fix something, always locate the file, read it, then fix it. Do not guess file paths.
+- Start every debugging task with: list_dir to understand the project structure, then grep for the relevant symbol or route.
+- NEVER just describe a fix in text — always execute it using edit_file or write_file. Describing what you "would" change is not acceptable. Make the change.
+- After making a fix, confirm by reading the edited section of the file back.
 """
 
 
@@ -168,8 +170,11 @@ def strip_tool_blocks(text: str) -> str:
     return re.sub(r"```tool\s*.*?```", "", text, flags=re.DOTALL).strip()
 
 
-def execute_tool(call: dict) -> str:
+def execute_tool(call: dict, mcp_manager: MCPManager | None = None) -> str:
     name = call.get("name")
+    if mcp_manager and mcp_manager.is_mcp_tool(name):
+        args = {k: v for k, v in call.items() if k != "name"}
+        return mcp_manager.call_tool(name, args)
     if name == "bash":
         return run_bash(call["command"], cwd=call.get("cwd"))
     elif name == "read_file":
@@ -256,10 +261,11 @@ def print_header(llm_name: str):
 
 # ── Agent turn ────────────────────────────────────────────────────────────────
 
-def agent_turn(send_fn, user_message: str, is_first_message: bool):
+def agent_turn(send_fn, user_message: str, is_first_message: bool,
+               system_prompt: str, mcp_manager: MCPManager | None = None):
     """Send a message and handle the full tool loop until LLM stops calling tools."""
     if is_first_message:
-        full_message = f"{SYSTEM_PROMPT}\n\n{user_message}"
+        full_message = f"{system_prompt}\n\n{user_message}"
     else:
         full_message = user_message
 
@@ -283,7 +289,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
         results = []
         for call in tool_calls:
             print_tool_call(call)
-            result = execute_tool(call)
+            result = execute_tool(call, mcp_manager)
             print_tool_result(result)
             results.append({"tool": call["name"], "result": result})
 
@@ -304,34 +310,35 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
 
 # ── Main interactive shell ────────────────────────────────────────────────────
 
-def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str):
+def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str,
+                      mcp_manager: MCPManager | None = None):
     current_llm = start_llm
     send_fn = send_fns[current_llm]
     new_conv_fn = new_conv_fns[current_llm]
     is_first_message = True
 
+    # Build system prompt once — appends MCP tool docs if any servers are connected
+    system_prompt = SYSTEM_PROMPT + (mcp_manager.prompt_section() if mcp_manager else "")
+
     print_header(current_llm)
 
-    use_pt = sys.stdin.isatty()  # prompt_toolkit needs a real TTY; fall back in VS Code / pipes
-    history = FileHistory(os.path.expanduser("~/.llm-agent/history")) if use_pt else None
-    pt_style = Style.from_dict({"prompt": "bold ansicyan"}) if use_pt else None
+    # persist input history across sessions
+    history_file = os.path.expanduser("~/.llm-agent/history")
+    os.makedirs(os.path.dirname(history_file), exist_ok=True)
+    try:
+        readline.read_history_file(history_file)
+    except FileNotFoundError:
+        pass
+    readline.set_history_length(1000)
 
     while True:
         try:
-            if use_pt:
-                prompt_tokens = FormattedText([("class:prompt", f"you [{current_llm}]> ")])
-                user_input = pt_prompt(
-                    prompt_tokens,
-                    history=history,
-                    style=pt_style,
-                    multiline=False,
-                    mouse_support=False,
-                ).strip()
-            else:
-                user_input = input(f"you [{current_llm}]> ").strip()
+            user_input = input(f"you [{current_llm}]> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
+        finally:
+            readline.write_history_file(history_file)
 
         if not user_input:
             continue
@@ -368,7 +375,7 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
             continue
 
         # ── normal message ────────────────────────────────────────────────
-        agent_turn(send_fn, user_input, is_first_message)
+        agent_turn(send_fn, user_input, is_first_message, system_prompt, mcp_manager)
         is_first_message = False
 
 
@@ -385,7 +392,8 @@ def main():
     args = parser.parse_args()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        # Expose CDP on a fixed port so chrome-devtools-mcp can connect to this browser
+        browser = p.chromium.launch(headless=False, args=["--remote-debugging-port=9222"])
 
         pages = {}
         send_fns = {}
@@ -405,9 +413,16 @@ def main():
 
         start_llm = "chatgpt" if args.llm == "chatgpt" else "gemini"
 
+        # Connect MCP servers after browser is up — chrome-devtools-mcp needs port 9222 live
+        mcp_manager = MCPManager()
+        n = mcp_manager.load_and_connect(status_cb=lambda msg: print(c(msg, DIM)))
+        if n:
+            print(c(f"  {n} MCP server(s) ready\n", DIM))
+
         try:
-            interactive_shell(pages, send_fns, new_conv_fns, start_llm)
+            interactive_shell(pages, send_fns, new_conv_fns, start_llm, mcp_manager)
         finally:
+            mcp_manager.stop_all()
             browser.close()
             print(c("\nBye.\n", DIM))
 

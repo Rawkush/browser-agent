@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "browser-llm-agent"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["playwright>=1.44.0"]
+dependencies = ["playwright>=1.44.0", "mcp>=1.0.0"]
 
 [project.scripts]
 rawagent = "browser_llm_agent.cli:main"
