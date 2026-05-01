@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 from llm.chatgpt import open_chatgpt, send_message as chatgpt_send, new_conversation as chatgpt_new
 from llm.gemini import open_gemini, send_message as gemini_send, new_conversation as gemini_new
 from tools.file_tools import read_file, write_file, edit_file, list_dir
-from tools.bash_tools import run_bash, stream_probe
+from tools.bash_tools import run_bash
 
 
 # ── ANSI colors ──────────────────────────────────────────────────────────────
@@ -49,29 +49,41 @@ When you need to use a tool, output a JSON block wrapped in triple backticks tag
 ```
 
 Available tools:
-- bash:         run a shell command       {"name": "bash", "command": "...", "cwd": "optional path"}
-- read_file:    read a file               {"name": "read_file", "path": "..."}
-- write_file:   create/overwrite file     {"name": "write_file", "path": "...", "content": "..."}
-- edit_file:    replace text in file      {"name": "edit_file", "path": "...", "old": "...", "new": "..."}
-- list_dir:     list directory contents   {"name": "list_dir", "path": "..."}
-- stream_probe: capture real LLM stream   {"name": "stream_probe", "provider": "ollama|openai|gemini", "max_chunks": 3, "cwd": "optional path"}
-                chunk shapes at runtime — use this before diagnosing any streaming or
-                token-extraction bug so you have ground-truth data, not guesses.
+- bash:       run any shell command    {"name": "bash", "command": "...", "cwd": "optional path"}
+- read_file:  read a file              {"name": "read_file", "path": "..."}
+- write_file: create/overwrite file    {"name": "write_file", "path": "...", "content": "..."}
+- edit_file:  replace text in file     {"name": "edit_file", "path": "...", "old": "...", "new": "..."}
+- list_dir:   list directory contents  {"name": "list_dir", "path": "..."}
 
-Feedback loop rules:
-- NEVER guess what chunk.content looks like for a streaming provider. Call stream_probe first.
-- stream_probe returns the actual constructorName, contentType, contentIsArray, and
-  contentSample for each chunk. Read those fields before touching extraction logic.
-- Diagnosis order for streaming bugs: stream_probe → read relevant file → edit_file → bash (build/test).
-- For all other bugs: read_file → diagnose → edit_file → bash (verify).
+Debugging methodology — follow this for every bug:
 
-General rules:
-- Use one tool at a time. Wait for result before next.
+  1. OBSERVE   Read the relevant files. If the bug involves runtime behaviour
+               (wrong output, empty response, unexpected format), use bash to
+               run the code and capture actual output before reading anything else.
+               Example: run a test script, print a value, call an endpoint.
+
+  2. HYPOTHESIZE  State a specific theory. "The bug is X because Y."
+               Do not proceed without a theory grounded in observed evidence.
+
+  3. EXPERIMENT  Use bash to verify or falsify the theory cheaply before
+               changing production code. Print the suspect value. Run a
+               minimal reproduction. Check a log file.
+
+  4. FIX       Apply one targeted edit_file change. Keep it minimal.
+
+  5. VERIFY    Use bash to confirm the fix works: build, run tests, or
+               re-run the reproduction from step 3.
+
+Rules:
+- Never diagnose from static code alone when bash can show you the runtime truth.
 - Always read a file before editing it.
-- When you are done with all steps, just say so in plain text — do NOT use a special done tool.
-- If a command fails, diagnose and fix.
+- One tool call at a time — wait for the result before the next.
+- If a step fails, return to OBSERVE before retrying.
+- When all steps are done, say so in plain text. Do not use a special done tool.
+- NEVER ask for permission before using a tool. Do not say "Should I run X?",
+  "Do you want me to proceed?", "Shall I apply this fix?", or any similar phrase.
+  Emit the tool block immediately and let the result speak for itself.
 - Do not ask clarifying questions — make reasonable assumptions and proceed.
-- Keep responses concise. For code, show the full file content only when necessary.
 """
 
 
@@ -163,12 +175,6 @@ def execute_tool(call: dict) -> str:
         return edit_file(call["path"], call["old"], call["new"])
     elif name == "list_dir":
         return list_dir(call.get("path", "."))
-    elif name == "stream_probe":
-        return stream_probe(
-            provider=call.get("provider", "ollama"),
-            max_chunks=int(call.get("max_chunks", 3)),
-            cwd=call.get("cwd"),
-        )
     else:
         return f"Error: unknown tool '{name}'"
 
