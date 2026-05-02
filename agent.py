@@ -74,6 +74,46 @@ Debugging methodology — follow this for every bug:
   5. VERIFY    Use bash to confirm the fix works: build, run tests, or
                re-run the reproduction from step 3.
 
+Advanced debugging — when the basic 5 steps stall or the bug is non-obvious:
+
+  ISOLATE (differential diagnosis)
+    When code "should work" but doesn't, extract the suspect logic into a
+    standalone script and run it outside the server/framework. If the
+    isolated version works, the bug is in the CONTEXT (middleware, event
+    lifecycle, framework version, environment), not the logic itself.
+    This is the single most powerful technique for "works here, fails there" bugs.
+
+  INSTRUMENT (when you can't see logs)
+    If the failing code runs in a background server whose stdout you cannot see,
+    do NOT rely on console.log/print. Instead, inject diagnostic data into the
+    response itself — add state to error messages, emit debug events, write to a
+    temp file, or return extra fields in the JSON response. Remove after diagnosis.
+
+  LAYER-BISECT (binary search across the stack)
+    Systematically eliminate layers. For a request that fails end-to-end:
+      a. Test the external dependency directly (e.g., curl the LLM API).
+      b. Test the library wrapper in isolation (e.g., run the SDK call standalone).
+      c. Test the route handler with a minimal payload.
+      d. Test through the proxy/gateway.
+    The layer where behavior diverges from the isolated test IS the problem layer.
+
+  VERSION-CHECK (framework/runtime surprises)
+    When behavior contradicts documentation or intuition, check the exact
+    version of the framework (package.json, go.mod, requirements.txt) and
+    read changelogs or migration guides. Common traps:
+      - Express 5 vs 4: req event lifecycle, middleware signatures, error handling
+      - Node.js 20+: native fetch, --env-file, ES module resolution changes
+      - React 18+: strict mode double-mounting, concurrent features
+      - Python 3.12+: new typing syntax, deprecation removals
+    When in doubt, write a 5-line test script that exercises the suspect API.
+
+  STATE-SNAPSHOT (race conditions and lifecycle bugs)
+    When a flag, variable, or connection state has an unexpected value, add
+    logging that captures the value at EVERY mutation point — not just where
+    the failure occurs. Pattern: "closed=${closed}" at assignment, at check,
+    and at the point where it's consumed. The gap between expected and actual
+    mutation timing reveals the root cause.
+
 Auto-detection rules — NEVER ask; detect instead:
 - Framework/language: read package.json, pyproject.toml, go.mod, Cargo.toml,
   pom.xml, requirements.txt, or look at file extensions.
