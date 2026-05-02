@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.request
 
-from browser_llm_agent.cli import SYSTEM_PROMPT, c, DIM, GREEN, RED, BLUE, BOLD
+from browser_llm_agent.cli import build_system_prompt, c, DIM, GREEN, RED, BLUE, BOLD
 from browser_llm_agent.mcp_client import MCPManager
 from browser_llm_agent.api_server import (
     RawAgentHandler, process_requests, _REQUEST_QUEUE,
@@ -75,7 +75,7 @@ def main():
         """
         from playwright.sync_api import sync_playwright
         from browser_llm_agent.llm.chatgpt import open_chatgpt, send_message as chatgpt_send
-        from browser_llm_agent.llm.gemini import open_gemini, send_message as gemini_send
+        from browser_llm_agent.llm.gemini import open_gemini, send_message as gemini_send, new_conversation as gemini_new_convo
 
         try:
             print(c("  Starting browser...", DIM), flush=True)
@@ -89,6 +89,7 @@ def main():
                 send_fn = lambda msg: chatgpt_send(page, msg)
             else:
                 page = open_gemini(browser)
+                gemini_new_convo(page)   # start a fresh conversation each session
                 send_fn = lambda msg: gemini_send(page, msg)
 
             mcp_manager = MCPManager()
@@ -103,7 +104,9 @@ def main():
             _pw_ready.set()
 
             # Blocking — processes agent requests forwarded from the HTTP thread
-            process_requests(send_fn, SYSTEM_PROMPT, mcp_manager)
+            # Pass None so we never fall back to rawagent's system prompt.
+            # In claude-raw mode the system prompt comes from Claude Code's request.
+            process_requests(send_fn, None, mcp_manager)
 
         except Exception as exc:
             _pw_error.append(exc)

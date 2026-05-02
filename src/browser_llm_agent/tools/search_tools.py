@@ -5,7 +5,17 @@ import subprocess
 import urllib.request
 import urllib.error
 
+from browser_llm_agent.tools.registry import tool
 
+
+@tool("glob", "Find files matching a glob pattern.", {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string", "description": "Glob pattern e.g. **/*.ts"},
+        "cwd": {"type": "string", "description": "Search root (optional)"},
+    },
+    "required": ["pattern"],
+})
 def glob(pattern: str, cwd: str = ".") -> str:
     cwd = os.path.expanduser(cwd)
     matches = _glob.glob(pattern, root_dir=cwd, recursive=True)
@@ -14,6 +24,16 @@ def glob(pattern: str, cwd: str = ".") -> str:
     return "\n".join(sorted(matches))
 
 
+@tool("grep", "Search for a regex pattern across files.", {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string"},
+        "path": {"type": "string", "description": "Directory or file to search"},
+        "include": {"type": "string", "description": "File glob filter e.g. *.py"},
+        "ignore_case": {"type": "boolean"},
+    },
+    "required": ["pattern"],
+})
 def grep(pattern: str, path: str = ".", include: str = None, ignore_case: bool = False) -> str:
     path = os.path.expanduser(path)
     # prefer ripgrep, fall back to grep
@@ -44,6 +64,13 @@ def grep(pattern: str, path: str = ".", include: str = None, ignore_case: bool =
     return output
 
 
+@tool("web_fetch", "Fetch a URL and return its content as plain text.", {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string"},
+    },
+    "required": ["url"],
+})
 def web_fetch(url: str, max_chars: int = 8000) -> str:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -63,6 +90,15 @@ def web_fetch(url: str, max_chars: int = 8000) -> str:
         return f"Error fetching {url}: {e}"
 
 
+@tool("find_files", "Find files or directories by exact name.", {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "File or directory name to find"},
+        "path": {"type": "string", "description": "Search root (default: .)"},
+        "file_type": {"type": "string", "description": "'file' or 'dir' (optional)"},
+    },
+    "required": ["name"],
+})
 def find_files(name: str, path: str = ".", file_type: str = None) -> str:
     path = os.path.expanduser(path)
     cmd = ["find", path, "-name", name]
@@ -77,6 +113,11 @@ def find_files(name: str, path: str = ".", file_type: str = None) -> str:
     return output if output else "No files found."
 
 
+@tool("delete_file", "Delete a file.", {
+    "type": "object",
+    "properties": {"path": {"type": "string"}},
+    "required": ["path"],
+})
 def delete_file(path: str) -> str:
     path = os.path.expanduser(path)
     if not os.path.exists(path):
@@ -87,6 +128,14 @@ def delete_file(path: str) -> str:
     return f"Deleted: {path}"
 
 
+@tool("move_file", "Move or rename a file.", {
+    "type": "object",
+    "properties": {
+        "src": {"type": "string"},
+        "dst": {"type": "string"},
+    },
+    "required": ["src", "dst"],
+})
 def move_file(src: str, dst: str) -> str:
     import shutil
     src = os.path.expanduser(src)
@@ -98,6 +147,11 @@ def move_file(src: str, dst: str) -> str:
     return f"Moved: {src} → {dst}"
 
 
+@tool("make_dir", "Create a directory (including parents).", {
+    "type": "object",
+    "properties": {"path": {"type": "string"}},
+    "required": ["path"],
+})
 def make_dir(path: str) -> str:
     path = os.path.expanduser(path)
     os.makedirs(path, exist_ok=True)

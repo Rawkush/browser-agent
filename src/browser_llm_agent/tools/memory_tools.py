@@ -3,6 +3,8 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
+from browser_llm_agent.tools.registry import tool
+
 DB_PATH = os.path.expanduser("~/.llm-agent/memory.db")
 
 
@@ -30,6 +32,14 @@ def _conn():
         conn.close()
 
 
+@tool("memory_save", "Save a persistent key/value memory.", {
+    "type": "object",
+    "properties": {
+        "key": {"type": "string"},
+        "value": {"type": "string"},
+    },
+    "required": ["key", "value"],
+})
 def memory_save(key: str, value: str) -> str:
     now = datetime.now().isoformat()
     with _conn() as conn:
@@ -42,6 +52,11 @@ def memory_save(key: str, value: str) -> str:
     return f"Saved memory: {key}"
 
 
+@tool("memory_get", "Retrieve a memory by key.", {
+    "type": "object",
+    "properties": {"key": {"type": "string"}},
+    "required": ["key"],
+})
 def memory_get(key: str) -> str:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM memory WHERE key = ?", (key,)).fetchone()
@@ -51,6 +66,9 @@ def memory_get(key: str) -> str:
     return f"{row['key']}: {row['value']}\n(saved: {ts})"
 
 
+@tool("memory_list", "List all saved memories.", {
+    "type": "object", "properties": {}, "required": [],
+})
 def memory_list() -> str:
     with _conn() as conn:
         rows = conn.execute("SELECT key, value FROM memory ORDER BY key").fetchall()
@@ -62,6 +80,11 @@ def memory_list() -> str:
     )
 
 
+@tool("memory_search", "Search memories by keyword.", {
+    "type": "object",
+    "properties": {"query": {"type": "string"}},
+    "required": ["query"],
+})
 def memory_search(query: str) -> str:
     with _conn() as conn:
         rows = conn.execute(
@@ -73,6 +96,11 @@ def memory_search(query: str) -> str:
     return "\n".join(f"[{r['key']}] {r['value'][:80]}" for r in rows)
 
 
+@tool("memory_delete", "Delete a memory by key.", {
+    "type": "object",
+    "properties": {"key": {"type": "string"}},
+    "required": ["key"],
+})
 def memory_delete(key: str) -> str:
     with _conn() as conn:
         cur = conn.execute("DELETE FROM memory WHERE key = ?", (key,))

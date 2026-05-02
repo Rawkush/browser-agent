@@ -16,20 +16,16 @@ import re
 import sys
 import time
 
-from browser_llm_agent.tools.file_tools import read_file, write_file, edit_file, list_dir
-from browser_llm_agent.tools.bash_tools import run_bash
-from browser_llm_agent.tools.search_tools import (
-    glob, grep, web_fetch, find_files, delete_file, move_file, make_dir
-)
-from browser_llm_agent.tools.todo_tools import todo_add, todo_list, todo_update, todo_delete
-from browser_llm_agent.tools.memory_tools import memory_save, memory_get, memory_list, memory_search, memory_delete
+# Import tools package to trigger @tool decorator registration
+import browser_llm_agent.tools  # noqa: F401
+
+from browser_llm_agent.tools.registry import execute_tool, get_prompt_tools, get_claude_tools
 from browser_llm_agent.mcp_client import MCPManager
 
 # Claude backend (only imported when --llm claude is used)
 try:
     from browser_llm_agent.llm.claude import (
         create_client as claude_create_client,
-        tools_with_mcp as claude_tools_with_mcp,
         SYSTEM_PROMPT as CLAUDE_SYSTEM_PROMPT,
     )
     CLAUDE_AVAILABLE = True
@@ -56,7 +52,7 @@ def c(text, *codes):
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a coding assistant with file and shell access. You are running inside an interactive terminal shell.
+SYSTEM_PROMPT_HEADER = """You are a coding assistant with file and shell access. You are running inside an interactive terminal shell.
 
 When you need to use a tool, output a JSON block wrapped in triple backticks tagged as "tool":
 
@@ -65,28 +61,9 @@ When you need to use a tool, output a JSON block wrapped in triple backticks tag
 ```
 
 Available tools:
-- bash:       run a shell command          {"name": "bash", "command": "...", "cwd": "optional path"}
-- read_file:  read a file (line-numbered)  {"name": "read_file", "path": "..."}
-- write_file: create/overwrite a file      {"name": "write_file", "path": "...", "content": "..."}
-- edit_file:  replace exact text in file   {"name": "edit_file", "path": "...", "old": "...", "new": "..."}
-- list_dir:   list directory contents      {"name": "list_dir", "path": "..."}
-- glob:       find files by pattern        {"name": "glob", "pattern": "**/*.ts", "cwd": "optional"}
-- grep:       search text in files         {"name": "grep", "pattern": "myFunc", "path": ".", "include": "*.py", "ignore_case": false}
-- web_fetch:  fetch a URL as plain text    {"name": "web_fetch", "url": "https://..."}
-- find_files: find file/dir by name        {"name": "find_files", "name": "index.ts", "path": ".", "file_type": "file"}
-- delete_file: delete a file              {"name": "delete_file", "path": "..."}
-- move_file:  move or rename a file        {"name": "move_file", "src": "...", "dst": "..."}
-- make_dir:      create a directory              {"name": "make_dir", "path": "..."}
-- todo_add:      add a todo item                 {"name": "todo_add", "content": "...", "priority": "high|medium|low"}
-- todo_list:     list todos                      {"name": "todo_list", "status": "pending|in_progress|done|null"}
-- todo_update:   update todo status              {"name": "todo_update", "todo_id": "...", "status": "in_progress|done|pending"}
-- todo_delete:   delete a todo                   {"name": "todo_delete", "todo_id": "..."}
-- memory_save:   save a persistent memory        {"name": "memory_save", "key": "...", "value": "..."}
-- memory_get:    retrieve a memory by key        {"name": "memory_get", "key": "..."}
-- memory_list:   list all memories               {"name": "memory_list"}
-- memory_search: search memories by keyword      {"name": "memory_search", "query": "..."}
-- memory_delete: delete a memory                 {"name": "memory_delete", "key": "..."}
+"""
 
+SYSTEM_PROMPT_FOOTER = """
 Debugging methodology — follow this for every bug:
 
   1. OBSERVE   Run list_dir to understand the project layout. Then grep or glob
@@ -105,6 +82,12 @@ Debugging methodology — follow this for every bug:
 
   5. VERIFY    Use bash to confirm the fix works. Re-run the reproduction
                from step 3 or run the test suite.
+
+Task planning — for complex requests (3+ steps):
+  1. DECOMPOSE  Use todo_add to create a numbered plan before acting.
+  2. EXECUTE    Work through steps, marking in_progress → done.
+  3. VERIFY     Run tests/read files to confirm work.
+  4. REPORT     Summarize what was done.
 
 Auto-detection rules — NEVER ask; detect instead:
 - Framework/language: read package.json, pyproject.toml, go.mod, Cargo.toml,
@@ -146,6 +129,22 @@ Core rules:
 - When you are done with all steps, say so in plain text. Do not use a special done tool.
 - Keep responses concise. Show full file content only when strictly necessary.
 """
+
+
+def build_system_prompt(mcp_manager: MCPManager | None = None) -> str:
+    """Build the full system prompt with auto-generated tool docs + project context."""
+    from browser_llm_agent.tools.project_tools import project_detect
+
+    prompt = SYSTEM_PROMPT_HEADER + get_prompt_tools() + SYSTEM_PROMPT_FOOTER
+
+    # Auto-detect project context
+    ctx = project_detect(".")
+    if ctx:
+        prompt += f"\n\nProject context (auto-detected):\n{ctx}\n"
+
+    if mcp_manager:
+        prompt += mcp_manager.prompt_section()
+    return prompt
 
 
 # ── Tool parsing + execution ──────────────────────────────────────────────────
@@ -222,58 +221,6 @@ def parse_tool_calls(text: str) -> list[dict]:
 
 def strip_tool_blocks(text: str) -> str:
     return re.sub(r"```tool\s*.*?```", "", text, flags=re.DOTALL).strip()
-
-
-def execute_tool(call: dict, mcp_manager: MCPManager | None = None) -> str:
-    name = call.get("name")
-    if mcp_manager and mcp_manager.is_mcp_tool(name):
-        args = {k: v for k, v in call.items() if k != "name"}
-        return mcp_manager.call_tool(name, args)
-    if name == "bash":
-        return run_bash(call["command"], cwd=call.get("cwd"))
-    elif name == "read_file":
-        return read_file(call["path"])
-    elif name == "write_file":
-        return write_file(call["path"], call["content"])
-    elif name == "edit_file":
-        return edit_file(call["path"], call["old"], call["new"])
-    elif name == "list_dir":
-        return list_dir(call.get("path", "."))
-    elif name == "glob":
-        return glob(call["pattern"], cwd=call.get("cwd", "."))
-    elif name == "grep":
-        return grep(call["pattern"], path=call.get("path", "."),
-                    include=call.get("include"), ignore_case=call.get("ignore_case", False))
-    elif name == "web_fetch":
-        return web_fetch(call["url"])
-    elif name == "find_files":
-        return find_files(call["name"], path=call.get("path", "."), file_type=call.get("file_type"))
-    elif name == "delete_file":
-        return delete_file(call["path"])
-    elif name == "move_file":
-        return move_file(call["src"], call["dst"])
-    elif name == "make_dir":
-        return make_dir(call["path"])
-    elif name == "todo_add":
-        return todo_add(call["content"], priority=call.get("priority", "medium"))
-    elif name == "todo_list":
-        return todo_list(status=call.get("status"))
-    elif name == "todo_update":
-        return todo_update(call["todo_id"], call["status"])
-    elif name == "todo_delete":
-        return todo_delete(call["todo_id"])
-    elif name == "memory_save":
-        return memory_save(call["key"], call["value"])
-    elif name == "memory_get":
-        return memory_get(call["key"])
-    elif name == "memory_list":
-        return memory_list()
-    elif name == "memory_search":
-        return memory_search(call["query"])
-    elif name == "memory_delete":
-        return memory_delete(call["key"])
-    else:
-        return f"Error: unknown tool '{name}'"
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -425,8 +372,12 @@ def claude_shell(mcp_manager: MCPManager | None = None):
         print(c("  Error: ANTHROPIC_API_KEY environment variable not set.", RED))
         return
 
+    # Enable agent spawning for Claude mode
+    from browser_llm_agent.tools.agent_tools import _configure as _configure_agents
+    _configure_agents(api_key)
+
     client = claude_create_client(api_key)
-    tools  = claude_tools_with_mcp(mcp_manager)
+    tools = get_claude_tools(mcp_manager)
     messages: list = []
 
     print_header("claude")
@@ -476,8 +427,8 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
     new_conv_fn = new_conv_fns[current_llm]
     is_first_message = True
 
-    # Build system prompt once — appends MCP tool docs if any servers are connected
-    system_prompt = SYSTEM_PROMPT + (mcp_manager.prompt_section() if mcp_manager else "")
+    # Build system prompt once — auto-generates tool docs from registry
+    system_prompt = build_system_prompt(mcp_manager)
 
     print_header(current_llm)
 

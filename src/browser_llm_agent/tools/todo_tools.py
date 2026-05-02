@@ -3,6 +3,8 @@ import os
 import uuid
 from datetime import datetime
 
+from browser_llm_agent.tools.registry import tool
+
 TODO_FILE = os.path.expanduser("~/.llm-agent/todos.json")
 
 
@@ -19,6 +21,14 @@ def _save(todos: list[dict]):
         json.dump(todos, f, indent=2)
 
 
+@tool("todo_add", "Add a todo item.", {
+    "type": "object",
+    "properties": {
+        "content": {"type": "string"},
+        "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["content"],
+})
 def todo_add(content: str, priority: str = "medium") -> str:
     todos = _load()
     item = {
@@ -33,6 +43,13 @@ def todo_add(content: str, priority: str = "medium") -> str:
     return f"Added [{item['id']}]: {content}"
 
 
+@tool("todo_list", "List todos, optionally filtered by status.", {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+    },
+    "required": [],
+})
 def todo_list(status: str = None) -> str:
     todos = _load()
     if status:
@@ -47,6 +64,14 @@ def todo_list(status: str = None) -> str:
     return "\n".join(lines)
 
 
+@tool("todo_update", "Update the status of a todo item.", {
+    "type": "object",
+    "properties": {
+        "todo_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+    },
+    "required": ["todo_id", "status"],
+})
 def todo_update(todo_id: str, status: str) -> str:
     valid = {"pending", "in_progress", "done"}
     if status not in valid:
@@ -61,6 +86,11 @@ def todo_update(todo_id: str, status: str) -> str:
     return f"Error: todo '{todo_id}' not found"
 
 
+@tool("todo_delete", "Delete a todo item.", {
+    "type": "object",
+    "properties": {"todo_id": {"type": "string"}},
+    "required": ["todo_id"],
+})
 def todo_delete(todo_id: str) -> str:
     todos = _load()
     before = len(todos)
@@ -69,3 +99,21 @@ def todo_delete(todo_id: str) -> str:
         return f"Error: todo '{todo_id}' not found"
     _save(todos)
     return f"Deleted [{todo_id}]"
+
+
+@tool("plan_create", "Create a multi-step plan. Each step becomes a todo item.", {
+    "type": "object",
+    "properties": {
+        "steps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of plan steps in order",
+        },
+    },
+    "required": ["steps"],
+})
+def plan_create(steps: list) -> str:
+    results = []
+    for i, step in enumerate(steps, 1):
+        results.append(todo_add(f"Step {i}: {step}", priority="high"))
+    return "\n".join(results)
