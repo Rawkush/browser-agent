@@ -17,6 +17,8 @@ from playwright.sync_api import sync_playwright
 
 from llm.chatgpt import open_chatgpt, send_message as chatgpt_send, new_conversation as chatgpt_new
 from llm.gemini import open_gemini, send_message as gemini_send, new_conversation as gemini_new
+from llm.deepseek import open_deepseek, send_message as deepseek_send, new_conversation as deepseek_new
+from llm.ollama import send_message as ollama_send
 from tools.file_tools import read_file, write_file, edit_file, list_dir
 from tools.bash_tools import run_bash
 
@@ -385,7 +387,9 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
                 print(c("  Started fresh conversation.\n", DIM))
 
             elif cmd == "/switch":
-                other = "gemini" if current_llm == "chatgpt" else "chatgpt"
+                available = list(send_fns.keys())
+                if len(available) > 1:
+                    other = [m for m in available if m != current_llm][0]
                 if other not in send_fns:
                     print(c(f"  {other} is not connected in this session.\n", RED))
                 else:
@@ -413,8 +417,13 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
 def main():
     parser = argparse.ArgumentParser(description="Browser LLM Coding Agent")
     parser.add_argument(
+        "--ollama-model",
+        default="qwen2.5-coder:14b",
+        help="Ollama model to use (default: qwen2.5-coder:14b)",
+    )
+    parser.add_argument(
         "--llm",
-        choices=["chatgpt", "gemini", "both"],
+        choices=["chatgpt", "gemini", "deepseek", "ollama", "all"],
         default="gemini",
         help="Which LLM to use (default: gemini)",
     )
@@ -433,11 +442,21 @@ def main():
             send_fns["chatgpt"] = lambda msg, pg=page: chatgpt_send(pg, msg)
             new_conv_fns["chatgpt"] = lambda pg=page: chatgpt_new(pg)
 
-        if args.llm in ("gemini", "both"):
+        if args.llm in ("gemini", "all"):
             page = open_gemini(browser)
             pages["gemini"] = page
             send_fns["gemini"] = lambda msg, pg=page: gemini_send(pg, msg)
             new_conv_fns["gemini"] = lambda pg=page: gemini_new(pg)
+
+        if args.llm in ("deepseek", "all"):
+            page = open_deepseek(browser)
+            pages["deepseek"] = page
+            send_fns["deepseek"] = lambda msg, pg=page: deepseek_send(pg, msg)
+            new_conv_fns["deepseek"] = lambda pg=page: deepseek_new(pg)
+
+        if args.llm in ("ollama", "all"):
+            send_fns["ollama"] = lambda msg: ollama_send(args.ollama_model, msg)
+            new_conv_fns["ollama"] = lambda: None  # Stateless API
 
         start_llm = "chatgpt" if args.llm == "chatgpt" else "gemini"
 

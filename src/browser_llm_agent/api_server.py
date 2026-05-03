@@ -95,6 +95,20 @@ _CLAUDE_CLIENT = None
 _MCP_MANAGER: MCPManager | None = None
 
 
+def _compose_system_prompt(default_system: str | None, request_system: str | None) -> str:
+    """Keep rawagent's tool contract while preserving client-provided context."""
+    default_system = (default_system or "").strip()
+    request_system = (request_system or "").strip()
+    if default_system and request_system:
+        return (
+            default_system
+            + "\n\nClient system prompt/context follows. Rawagent's tool format, tool names, "
+              "workspace-safety rules, and verification rules above take priority.\n\n"
+            + request_system
+        )
+    return default_system or request_system
+
+
 # ── Agent loop (browser backends — runs on Playwright thread only) ────────────
 
 def run_agent(send_fn, user_message: str, is_first_message: bool,
@@ -139,7 +153,7 @@ def run_agent(send_fn, user_message: str, is_first_message: bool,
     return final_text or strip_tool_blocks(response)
 
 
-def process_requests(send_fn, default_system: str,
+def process_requests(send_fn, default_system: str | None,
                      mcp_manager: MCPManager | None = None):
     """
     Blocking queue loop — MUST run on the Playwright thread.
@@ -152,7 +166,7 @@ def process_requests(send_fn, default_system: str,
             break
         user_msg, request_system, conv_id, future = item
         conv = _get_conversation(conv_id)
-        system = request_system if request_system else default_system
+        system = _compose_system_prompt(default_system, request_system)
         try:
             answer = run_agent(send_fn, user_msg, conv.is_first_message, system, mcp_manager)
             conv.is_first_message = False
@@ -172,7 +186,7 @@ def run_claude_agent(user_message: str, conv_id: str,
     conv = _get_conversation(conv_id)
     conv.messages.append({"role": "user", "content": user_message})
 
-    system = request_system if request_system else CLAUDE_SYSTEM_PROMPT
+    system = _compose_system_prompt(CLAUDE_SYSTEM_PROMPT, request_system)
     tools = get_claude_tools(mcp_manager)
 
     for _ in range(20):

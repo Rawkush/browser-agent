@@ -68,6 +68,7 @@ def grep(pattern: str, path: str = ".", include: str = None, ignore_case: bool =
     "type": "object",
     "properties": {
         "url": {"type": "string"},
+        "max_chars": {"type": "integer", "description": "Maximum characters to return (default: 8000)"},
     },
     "required": ["url"],
 })

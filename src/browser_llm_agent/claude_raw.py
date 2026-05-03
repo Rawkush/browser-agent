@@ -103,10 +103,11 @@ def main():
 
             _pw_ready.set()
 
-            # Blocking — processes agent requests forwarded from the HTTP thread
-            # Pass None so we never fall back to rawagent's system prompt.
-            # In claude-raw mode the system prompt comes from Claude Code's request.
-            process_requests(send_fn, None, mcp_manager)
+            # Blocking — processes agent requests forwarded from the HTTP thread.
+            # Rawagent's prompt stays in force so browser models keep the right
+            # tool-call format, while Claude Code's request prompt is appended
+            # as client context by api_server.
+            process_requests(send_fn, build_system_prompt(mcp_manager), mcp_manager)
 
         except Exception as exc:
             _pw_error.append(exc)

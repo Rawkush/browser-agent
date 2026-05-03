@@ -67,6 +67,13 @@ def execute_tool(call: dict, mcp_manager=None) -> str:
     if not tool_def:
         return f"Error: unknown tool '{name}'"
 
+    missing = [
+        param for param in tool_def.parameters.get("required", [])
+        if param not in call
+    ]
+    if missing:
+        return f"Error calling '{name}': missing required field(s): {', '.join(missing)}"
+
     # Build kwargs from the call dict, applying param_map if needed
     kwargs = {}
     props = tool_def.parameters.get("properties", {})

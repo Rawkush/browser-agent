@@ -76,12 +76,18 @@ The agent can use these tools automatically:
 
 | Category | Tools |
 |----------|-------|
-| Files | `read_file`, `write_file`, `edit_file`, `delete_file`, `move_file`, `list_dir`, `make_dir` |
+| Workspace | `workspace_snapshot`, `project_detect`, `read_many_files`, `apply_patch` |
+| Files | `read_file`, `write_file`, `edit_file`, `multi_edit`, `regex_edit`, `replace_lines`, `insert_at`, `append_file`, `delete_file`, `move_file`, `list_dir`, `make_dir` |
 | Search | `glob`, `grep`, `find_files` |
-| Shell | `bash` |
-| Web | `web_fetch` |
-| Todos | `todo_add`, `todo_list`, `todo_update`, `todo_delete` |
+| Shell | `bash`, `bash_status`, `bash_kill`, `python_exec`, `node_exec` |
+| Web/browser | `web_fetch`, `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_fill`, `browser_get_text`, `browser_eval` |
+| Git | `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_stash` |
+| Todos | `plan_create`, `todo_add`, `todo_list`, `todo_update`, `todo_delete` |
 | Memory | `memory_save`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` |
+
+The system prompt is Codex-style: inspect the worktree before edits, preserve
+user changes, plan multi-step work, make targeted patches, run relevant
+verification, and report changed files plus any skipped checks.
 
 ### Persistent memory
 
