@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.request
 
-from browser_llm_agent.cli import build_system_prompt, c, DIM, GREEN, RED, BLUE, BOLD
+from browser_llm_agent.cli import build_system_prompt, _browser_launch_args, c, DIM, GREEN, RED, BLUE, BOLD
 from browser_llm_agent.mcp_client import MCPManager
 from browser_llm_agent.api_server import (
     RawAgentHandler, process_requests, _REQUEST_QUEUE,
@@ -80,9 +80,7 @@ def main():
         try:
             print(c("  Starting browser...", DIM), flush=True)
             pw = sync_playwright().start()
-            browser = pw.chromium.launch(
-                headless=False, args=["--remote-debugging-port=9222"]
-            )
+            browser = pw.chromium.launch(headless=False, args=_browser_launch_args())
 
             if args.llm == "chatgpt":
                 page = open_chatgpt(browser)

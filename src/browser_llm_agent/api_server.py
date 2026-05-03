@@ -35,6 +35,7 @@ import concurrent.futures
 import json
 import os
 import queue
+import socket
 import threading
 import time
 import uuid
@@ -93,6 +94,9 @@ _REQUEST_QUEUE: queue.Queue = queue.Queue()
 # Module-level references for claude mode
 _CLAUDE_CLIENT = None
 _MCP_MANAGER: MCPManager | None = None
+_OLLAMA_CHATS: dict[str, object] = {}
+_OLLAMA_MODEL = "llama3"
+_OLLAMA_URL = "http://localhost:11434"
 
 
 def _compose_system_prompt(default_system: str | None, request_system: str | None) -> str:
@@ -107,6 +111,17 @@ def _compose_system_prompt(default_system: str | None, request_system: str | Non
             + request_system
         )
     return default_system or request_system
+
+
+def _browser_launch_args() -> list[str]:
+    """Prefer CDP port 9222 for MCP, but do not fail if another browser owns it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", 9222))
+        except OSError:
+            print(c("  Port 9222 is in use; Chrome DevTools MCP may not attach to this browser.", RED), flush=True)
+            return ["--remote-debugging-port=0"]
+    return ["--remote-debugging-port=9222"]
 
 
 # ── Agent loop (browser backends — runs on Playwright thread only) ────────────
@@ -232,11 +247,29 @@ def run_claude_agent(user_message: str, conv_id: str,
     return "(max tool turns reached)"
 
 
+def run_ollama_agent(user_message: str, conv_id: str,
+                     request_system: str, mcp_manager: MCPManager | None = None) -> str:
+    """Run an Ollama-backed text tool loop without Playwright."""
+    from browser_llm_agent.llm.ollama import create_chat
+
+    conv = _get_conversation(conv_id)
+    chat = _OLLAMA_CHATS.get(conv_id)
+    if chat is None:
+        chat = create_chat(model=_OLLAMA_MODEL, base_url=_OLLAMA_URL)
+        _OLLAMA_CHATS[conv_id] = chat
+
+    system = _compose_system_prompt(build_system_prompt(mcp_manager), request_system)
+    answer = run_agent(chat.send_message, user_message, conv.is_first_message, system, mcp_manager)
+    conv.is_first_message = False
+    return answer
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class RawAgentHandler(BaseHTTPRequestHandler):
     # Set by main() to select backend
     use_claude_backend = False
+    use_ollama_backend = False
 
     def log_message(self, fmt, *args):
         if "HEAD" not in (fmt % args):
@@ -297,6 +330,12 @@ class RawAgentHandler(BaseHTTPRequestHandler):
             # Claude mode: run directly, no Playwright thread needed
             try:
                 answer = run_claude_agent(user_msg, conv_id, request_system, _MCP_MANAGER)
+            except Exception as exc:
+                answer = f"Error: {exc}"
+        elif self.use_ollama_backend:
+            # Ollama mode: run directly, no Playwright thread needed
+            try:
+                answer = run_ollama_agent(user_msg, conv_id, request_system, _MCP_MANAGER)
             except Exception as exc:
                 answer = f"Error: {exc}"
         else:
@@ -387,7 +426,7 @@ class RawAgentHandler(BaseHTTPRequestHandler):
 # ── Entry point (standalone server) ──────────────────────────────────────────
 
 def main():
-    global _CLAUDE_CLIENT, _MCP_MANAGER
+    global _CLAUDE_CLIENT, _MCP_MANAGER, _OLLAMA_MODEL, _OLLAMA_URL
 
     parser = argparse.ArgumentParser(
         description="rawagent API server — Claude Code CLI backed by rawagent"
@@ -395,6 +434,8 @@ def main():
     parser.add_argument("--llm", choices=["chatgpt", "gemini", "claude", "ollama"], default="gemini")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--ollama-model", default=os.environ.get("OLLAMA_MODEL", "llama3"))
+    parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
     args = parser.parse_args()
 
     print(c(f"\n  rawagent API server  [{args.llm}]", BOLD + BLUE))
@@ -407,7 +448,29 @@ def main():
         print(c(f"  {n} MCP server(s) ready", DIM), flush=True)
     _MCP_MANAGER = mcp_manager
 
-    if args.llm == "claude":
+    if args.llm == "ollama":
+        _OLLAMA_MODEL = args.ollama_model
+        _OLLAMA_URL = args.ollama_url
+        RawAgentHandler.use_claude_backend = False
+        RawAgentHandler.use_ollama_backend = True
+
+        http_server = HTTPServer((args.host, args.port), RawAgentHandler)
+
+        print(c(f"\n  Ready (Ollama mode — no browser needed).", BOLD))
+        print(c(f"  model: {_OLLAMA_MODEL}  url: {_OLLAMA_URL}", GREEN))
+        print(c(f"  ANTHROPIC_BASE_URL=http://{args.host}:{args.port} ANTHROPIC_API_KEY=rawagent claude", GREEN))
+        print(c("─" * 60, BLUE) + "\n")
+
+        try:
+            http_server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            http_server.shutdown()
+            mcp_manager.stop_all()
+            print(c("\nBye.\n", DIM))
+
+    elif args.llm == "claude":
         # ── Claude mode: no browser, no Playwright ──────────────────────────
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -446,7 +509,7 @@ def main():
         print(c("  Starting browser...", DIM), flush=True)
 
         playwright = sync_playwright().start()
-        browser = playwright.chromium.launch(headless=False, args=["--remote-debugging-port=9222"])
+        browser = playwright.chromium.launch(headless=False, args=_browser_launch_args())
 
         if args.llm == "chatgpt":
             page = open_chatgpt(browser)
@@ -457,6 +520,7 @@ def main():
 
         # HTTP server runs in background thread; Playwright stays on main thread
         RawAgentHandler.use_claude_backend = False
+        RawAgentHandler.use_ollama_backend = False
         http_server = HTTPServer((args.host, args.port), RawAgentHandler)
         t = threading.Thread(target=http_server.serve_forever, daemon=True)
         t.start()

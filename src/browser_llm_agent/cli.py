@@ -13,6 +13,7 @@ import json
 import os
 import readline
 import re
+import socket
 import sys
 import time
 
@@ -58,6 +59,24 @@ def build_system_prompt(mcp_manager: MCPManager | None = None) -> str:
     ctx = project_detect(".")
     mcp_section = mcp_manager.prompt_section() if mcp_manager else ""
     return build_browser_system_prompt(get_prompt_tools(), ctx, mcp_section)
+
+
+def _browser_launch_args() -> list[str]:
+    """Prefer CDP port 9222 for MCP, but do not fail if another browser owns it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", 9222))
+        except OSError:
+            print(c("  Port 9222 is in use; Chrome DevTools MCP may not attach to this browser.", YELLOW))
+            return ["--remote-debugging-port=0"]
+    return ["--remote-debugging-port=9222"]
+
+
+def _write_history_file(path: str):
+    try:
+        readline.write_history_file(path)
+    except OSError:
+        pass
 
 
 # ── Tool parsing + execution ──────────────────────────────────────────────────
@@ -299,7 +318,7 @@ def claude_shell(mcp_manager: MCPManager | None = None):
     os.makedirs(os.path.dirname(history_file), exist_ok=True)
     try:
         readline.read_history_file(history_file)
-    except FileNotFoundError:
+    except OSError:
         pass
     readline.set_history_length(1000)
 
@@ -310,7 +329,7 @@ def claude_shell(mcp_manager: MCPManager | None = None):
             print()
             break
         finally:
-            readline.write_history_file(history_file)
+            _write_history_file(history_file)
 
         if not user_input:
             continue
@@ -350,7 +369,7 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
     os.makedirs(os.path.dirname(history_file), exist_ok=True)
     try:
         readline.read_history_file(history_file)
-    except FileNotFoundError:
+    except OSError:
         pass
     readline.set_history_length(1000)
 
@@ -361,7 +380,7 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
             print()
             break
         finally:
-            readline.write_history_file(history_file)
+            _write_history_file(history_file)
 
         if not user_input:
             continue
@@ -412,7 +431,41 @@ def main():
         default="gemini",
         help="Which LLM to use (default: gemini). 'claude' uses the Anthropic API directly — no browser needed.",
     )
+    parser.add_argument(
+        "--ollama-model",
+        default=os.environ.get("OLLAMA_MODEL", "llama3"),
+        help="Ollama model to use with --llm ollama (default: OLLAMA_MODEL or llama3).",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        default=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+        help="Ollama base URL with --llm ollama (default: http://localhost:11434).",
+    )
     args = parser.parse_args()
+
+    # ── Ollama path: no browser required ─────────────────────────────────────
+    if args.llm == "ollama":
+        from browser_llm_agent.llm.ollama import create_chat
+
+        mcp_manager = MCPManager()
+        n = mcp_manager.load_and_connect(status_cb=lambda msg: print(c(msg, DIM)))
+        if n:
+            print(c(f"  {n} MCP server(s) ready\n", DIM))
+
+        chat = create_chat(model=args.ollama_model, base_url=args.ollama_url)
+        print(c(f"  Using Ollama model '{args.ollama_model}' at {args.ollama_url}\n", DIM))
+        try:
+            interactive_shell(
+                pages={},
+                send_fns={"ollama": chat.send_message},
+                new_conv_fns={"ollama": chat.new_conversation},
+                start_llm="ollama",
+                mcp_manager=mcp_manager,
+            )
+        finally:
+            mcp_manager.stop_all()
+            print(c("\nBye.\n", DIM))
+        return
 
     # ── Claude path: no browser required ─────────────────────────────────────
     if args.llm == "claude":
@@ -434,7 +487,7 @@ def main():
 
     with sync_playwright() as p:
         # Expose CDP on a fixed port so chrome-devtools-mcp can connect to this browser
-        browser = p.chromium.launch(headless=False, args=["--remote-debugging-port=9222"])
+        browser = p.chromium.launch(headless=False, args=_browser_launch_args())
 
         pages = {}
         send_fns = {}
