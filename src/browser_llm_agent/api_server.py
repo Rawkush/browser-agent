@@ -47,6 +47,8 @@ import browser_llm_agent.tools  # noqa: F401
 
 from browser_llm_agent.cli import (
     build_system_prompt,
+    build_tool_result_message,
+    build_turn_message,
     parse_tool_calls,
     strip_tool_blocks,
     print_tool_call,
@@ -129,10 +131,11 @@ def _browser_launch_args() -> list[str]:
 def run_agent(send_fn, user_message: str, is_first_message: bool,
               system_prompt: str, mcp_manager: MCPManager | None = None) -> str:
     """Run full rawagent tool loop. Must be called from the Playwright thread."""
+    turn_message = build_turn_message(user_message)
     if is_first_message and system_prompt:
-        full_message = f"{system_prompt}\n\n{user_message}"
+        full_message = f"{system_prompt}\n\n{turn_message}"
     else:
-        full_message = user_message
+        full_message = turn_message
 
     print(c("  [rawagent] thinking...", DIM), flush=True)
     response = send_fn(full_message)
@@ -155,10 +158,7 @@ def run_agent(send_fn, user_message: str, is_first_message: bool,
             print_tool_result(result)
             results.append({"tool": call.get("name", "?"), "result": result})
 
-        result_text = "\n".join(
-            f"Tool `{r['tool']}` result:\n```\n{r['result']}\n```"
-            for r in results
-        )
+        result_text = build_tool_result_message(results)
         time.sleep(1)
         print(c("  [rawagent] thinking...", DIM), flush=True)
         response = send_fn(result_text)

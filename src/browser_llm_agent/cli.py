@@ -14,6 +14,7 @@ import os
 import readline
 import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -77,6 +78,54 @@ def _write_history_file(path: str):
         readline.write_history_file(path)
     except OSError:
         pass
+
+
+def _short_git_status(cwd: str = ".") -> str:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=cwd,
+        )
+    except Exception as e:
+        return f"(git status unavailable: {e})"
+    if result.returncode != 0:
+        return f"(git status failed: {result.stderr.strip() or result.stdout.strip()})"
+    status = result.stdout.strip()
+    if not status:
+        return "(clean)"
+    lines = status.splitlines()
+    if len(lines) > 40:
+        return "\n".join(lines[:40]) + f"\n... ({len(lines) - 40} more files)"
+    return status
+
+
+def build_turn_message(user_message: str) -> str:
+    """Attach small, fresh context to every turn so browser models stay grounded."""
+    return (
+        f"{user_message}\n\n"
+        "<rawagent_turn_context>\n"
+        f"cwd: {os.getcwd()}\n"
+        "git status --short:\n"
+        f"{_short_git_status()}\n"
+        "Use this context to avoid stale assumptions. For tracebacks, inspect the named file/line before editing.\n"
+        "</rawagent_turn_context>"
+    )
+
+
+def build_tool_result_message(results: list[dict]) -> str:
+    body = "\n".join(
+        f"Tool `{r['tool']}` result:\n```\n{r['result']}\n```"
+        for r in results
+    )
+    return (
+        body
+        + "\n\nTool-result protocol: if any result is an Error, failed edit, missing string, "
+          "or failed patch check, stop relying on the previous assumption. Inspect current "
+          "files/diff or rerun a focused command, then continue with a corrected fix."
+    )
 
 
 # ── Tool parsing + execution ──────────────────────────────────────────────────
@@ -197,10 +246,11 @@ def print_header(llm_name: str):
 def agent_turn(send_fn, user_message: str, is_first_message: bool,
                system_prompt: str, mcp_manager: MCPManager | None = None):
     """Send a message and handle the full tool loop until LLM stops calling tools."""
+    turn_message = build_turn_message(user_message)
     if is_first_message:
-        full_message = f"{system_prompt}\n\n{user_message}"
+        full_message = f"{system_prompt}\n\n{turn_message}"
     else:
-        full_message = user_message
+        full_message = turn_message
 
     print(c("  thinking...", DIM), end="\r")
     response = send_fn(full_message)
@@ -227,10 +277,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
             results.append({"tool": call["name"], "result": result})
 
         # feed results back
-        result_text = "\n".join(
-            f"Tool `{r['tool']}` result:\n```\n{r['result']}\n```"
-            for r in results
-        )
+        result_text = build_tool_result_message(results)
         time.sleep(1)
         print(c("  thinking...", DIM), end="\r")
         response = send_fn(result_text)
