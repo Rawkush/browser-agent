@@ -392,7 +392,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="rawagent API server — Claude Code CLI backed by rawagent"
     )
-    parser.add_argument("--llm", choices=["chatgpt", "gemini", "claude"], default="gemini")
+    parser.add_argument("--llm", choices=["chatgpt", "gemini", "claude", "ollama"], default="gemini")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()

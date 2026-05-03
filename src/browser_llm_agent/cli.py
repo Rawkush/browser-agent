@@ -408,7 +408,7 @@ def main():
     parser = argparse.ArgumentParser(description="Browser LLM Coding Agent")
     parser.add_argument(
         "--llm",
-        choices=["chatgpt", "gemini", "both", "claude"],
+        choices=["chatgpt", "gemini", "both", "claude", "ollama"],
         default="gemini",
         help="Which LLM to use (default: gemini). 'claude' uses the Anthropic API directly — no browser needed.",
     )
