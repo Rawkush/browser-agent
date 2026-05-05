@@ -57,6 +57,17 @@ _REASONING_SYSTEM = (
 )
 
 
+# Reminder prepended to every user turn so the model always sees the tool-call
+# format right before it responds, regardless of how long the system prompt is.
+_TOOL_REMINDER = (
+    "REMINDER — use ```tool JSON blocks for ALL file/shell operations. Example:\n"
+    "```tool\n"
+    '{"name": "write_file", "path": "path/to/file", "content": "..."}\n'
+    "```\n"
+    "Never describe what you would do — emit the tool call JSON directly.\n\n"
+)
+
+
 # ── Shared HTTP helper ─────────────────────────────────────────────────────────
 
 def _http_call(base_url: str, model: str, messages: list[dict], timeout: int = 600) -> str:
@@ -163,7 +174,7 @@ class OllamaChat:
     # ── public API ────────────────────────────────────────────────────────────
 
     def send_message(self, message: str) -> str:
-        self.messages.append({"role": "user", "content": message})
+        self.messages.append({"role": "user", "content": _TOOL_REMINDER + message})
 
         # Proactively compact before hitting the limit
         if _context_chars(self.messages) > self.max_context_chars:
@@ -277,7 +288,7 @@ class OllamaReasoningChat:
     # ── public API ────────────────────────────────────────────────────────────
 
     def send_message(self, message: str) -> str:
-        self.messages.append({"role": "user", "content": message})
+        self.messages.append({"role": "user", "content": _TOOL_REMINDER + message})
 
         # Proactively compact before hitting the limit
         if _context_chars(self.messages) > self.max_context_chars:

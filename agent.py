@@ -323,14 +323,17 @@ _NUDGE_MSG = (
 )
 
 _ORCHESTRATOR_PROMPT = (
-    "You are a intent classifier. Given an AI assistant's response, decide whether "
-    "it DESCRIBES actions it intends to take (like 'I will stage the files', "
-    "'Let me commit', 'I'll run the command') WITHOUT actually emitting tool call "
-    "JSON blocks (```tool {...} ```).\n\n"
-    "Reply with ONLY one word:\n"
-    "- UNFULFILLED — if the response promises/describes actions but has no tool call blocks\n"
-    "- COMPLETE — if the response either contains tool calls OR is just a normal answer/explanation "
-    "with no promised actions\n\n"
+    "You are a strict intent classifier. Given an AI assistant's response, decide:\n\n"
+    "UNFULFILLED — the response contains FUTURE-TENSE promises to act, using phrases "
+    "like 'I will ...', 'I'll ...', 'Let me ...', 'I'm going to ...', 'First I'll ...', "
+    "'Next I'll ...'. The key signal is the assistant says it WILL do something but "
+    "has NOT done it yet in this response.\n\n"
+    "COMPLETE — the response is any of these:\n"
+    "  - A summary of what was ALREADY done (past tense: 'committed', 'staged', 'created')\n"
+    "  - An explanation or answer with no promised actions\n"
+    "  - Contains ```tool blocks (actual tool calls)\n"
+    "  - An error message or status report\n\n"
+    "Reply with ONLY the single word UNFULFILLED or COMPLETE. No explanation.\n\n"
     "Response to classify:\n"
 )
 
@@ -343,7 +346,7 @@ def _has_unfulfilled_intent(response: str) -> bool:
         preview = response[:500] if len(response) > 500 else response
         print(c("  [orchestrator] classifying response intent...", DIM))
         result = _ollama.chat(
-            model="qwen2.5-coder:1.5b",
+            model="qwen2.5-coder:7b",
             messages=[{"role": "user", "content": _ORCHESTRATOR_PROMPT + preview}],
             options={"temperature": 0, "num_predict": 10},
         )
