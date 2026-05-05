@@ -120,12 +120,58 @@ def build_tool_result_message(results: list[dict]) -> str:
         f"Tool `{r['tool']}` result:\n```\n{r['result']}\n```"
         for r in results
     )
-    return (
-        body
-        + "\n\nTool-result protocol: if any result is an Error, failed edit, missing string, "
-          "or failed patch check, stop relying on the previous assumption. Inspect current "
-          "files/diff or rerun a focused command, then continue with a corrected fix."
+    has_error = any(
+        any(kw in r["result"].lower() for kw in
+            ("error", "failed", "traceback", "exception", "not found", "no such file"))
+        for r in results
     )
+    protocol = (
+        "\n\nTool-result protocol: if any result is an Error, failed edit, missing string, "
+        "or failed patch check, stop relying on the previous assumption. "
+        "Form a new hypothesis grounded in this output, then test it with a focused command or edit."
+    )
+    if has_error:
+        protocol += (
+            "\n[Failure detected] Do not repeat the same approach. "
+            "Treat the error as new evidence — revise your hypothesis and try a different fix."
+        )
+    return body + protocol
+
+
+# ── Verification feedback loop ─────────────────────────────────────────────────
+
+# Phrases that suggest the agent believes the task is complete
+_COMPLETION_PHRASES = (
+    "fixed", "resolved", "should work", "should now", "now works",
+    "the issue is", "bug is fixed", "problem is fixed", "implemented the",
+    "changes are in place", "the fix", "successfully applied", "has been fixed",
+    "has been resolved", "the change has",
+)
+
+# Tool name fragments that indicate actual execution (not just file reading)
+_VERIFICATION_TOOL_FRAGMENTS = ("bash", "python", "run", "execute", "test")
+
+_VERIFICATION_NUDGE = (
+    "[Evidence required] You described a fix but have not run any verification yet. "
+    "Follow the hypothesis-test cycle:\n"
+    "1. State your hypothesis — if the fix is correct, what should running X produce?\n"
+    "2. Execute the verification: run the relevant test, build command, or reproduction script.\n"
+    "3. Read the actual output. If it confirms, report it with the evidence shown.\n"
+    "4. If it fails, analyse what the output reveals, form a revised hypothesis, and test again.\n"
+    "Do not report success until you have seen actual passing output."
+)
+
+
+def _claims_completion(text: str) -> bool:
+    """Return True if text suggests the agent thinks the task is done."""
+    lower = text.lower()
+    return any(phrase in lower for phrase in _COMPLETION_PHRASES)
+
+
+def _tool_is_verification(tool_name: str) -> bool:
+    """Return True if the tool name implies actual execution rather than passive reading."""
+    lower = tool_name.lower()
+    return any(frag in lower for frag in _VERIFICATION_TOOL_FRAGMENTS)
 
 
 # ── Tool parsing + execution ──────────────────────────────────────────────────
@@ -245,7 +291,12 @@ def print_header(llm_name: str):
 
 def agent_turn(send_fn, user_message: str, is_first_message: bool,
                system_prompt: str, mcp_manager: MCPManager | None = None):
-    """Send a message and handle the full tool loop until LLM stops calling tools."""
+    """Send a message and handle the full tool loop until LLM stops calling tools.
+
+    Includes a verification feedback loop: if the agent claims the task is done
+    without having run any execution tool, it is nudged to actually verify before
+    the turn ends.
+    """
     turn_message = build_turn_message(user_message)
     if is_first_message:
         full_message = f"{system_prompt}\n\n{turn_message}"
@@ -256,8 +307,10 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
     response = send_fn(full_message)
     print("              ", end="\r")  # clear "thinking..."
 
-    max_tool_turns = 20
+    max_tool_turns = 40  # higher ceiling to allow full hypothesis-test cycles
     turn = 0
+    ran_verification = False   # set True once any execution/test tool is used
+    used_any_tools = False     # set True once any tool call runs
 
     while turn < max_tool_turns:
         tool_calls = parse_tool_calls(response)
@@ -266,7 +319,19 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
         print_llm(response)
 
         if not tool_calls:
+            # Agent stopped — if it claimed success without ever running a check, force it.
+            prose = strip_tool_blocks(response)
+            if used_any_tools and _claims_completion(prose) and not ran_verification:
+                print(c("  [verification required — no execution tool was run]", YELLOW))
+                time.sleep(1)
+                print(c("  thinking...", DIM), end="\r")
+                response = send_fn(_VERIFICATION_NUDGE)
+                print("              ", end="\r")
+                turn += 1
+                continue
             break
+
+        used_any_tools = True
 
         # execute each tool call
         results = []
@@ -275,6 +340,8 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
             result = execute_tool(call, mcp_manager)
             print_tool_result(result)
             results.append({"tool": call["name"], "result": result})
+            if _tool_is_verification(call["name"]):
+                ran_verification = True
 
         # feed results back
         result_text = build_tool_result_message(results)
@@ -292,10 +359,18 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
 
 def claude_agent_turn(client, tools: list, messages: list, user_message: str,
                       mcp_manager: MCPManager | None = None):
-    """One user turn using Claude's native tool calling. Mutates `messages` in place."""
+    """One user turn using Claude's native tool calling. Mutates `messages` in place.
+
+    Includes a verification feedback loop: if the agent claims the task is done
+    without having run any execution tool, it is nudged to actually verify before
+    the turn ends.
+    """
     messages.append({"role": "user", "content": user_message})
 
-    max_turns = 20
+    max_turns = 40  # higher ceiling to allow full hypothesis-test cycles
+    ran_verification = False   # set True once any execution/test tool is used
+    used_any_tools = False     # set True once any tool call runs
+
     for _ in range(max_turns):
         print(c("  thinking...", DIM), end="\r", flush=True)
         response = client.messages.create(
@@ -320,7 +395,15 @@ def claude_agent_turn(client, tools: list, messages: list, user_message: str,
                 print(f"\n{c(block.text.strip(), GREEN)}\n")
 
         if not tool_uses:
+            # Agent stopped — if it claimed success without running any check, force it.
+            final_text = " ".join(b.text for b in text_blocks)
+            if used_any_tools and _claims_completion(final_text) and not ran_verification:
+                print(c("  [verification required — no execution tool was run]", YELLOW))
+                messages.append({"role": "user", "content": _VERIFICATION_NUDGE})
+                continue
             break
+
+        used_any_tools = True
 
         # Execute tools and collect results
         tool_results = []
@@ -334,6 +417,8 @@ def claude_agent_turn(client, tools: list, messages: list, user_message: str,
                 "tool_use_id": tu.id,
                 "content": result,
             })
+            if _tool_is_verification(tu.name):
+                ran_verification = True
 
         messages.append({"role": "user", "content": tool_results})
     else:
@@ -481,7 +566,15 @@ def main():
     parser.add_argument(
         "--ollama-model",
         default=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"),
-        help="Ollama model to use with --llm ollama (default: OLLAMA_MODEL or qwen2.5-coder:14b).",
+        help="Ollama coder model (default: OLLAMA_MODEL or qwen2.5-coder:14b).",
+    )
+    parser.add_argument(
+        "--ollama-reasoning-model",
+        default=os.environ.get("OLLAMA_REASONING_MODEL", ""),
+        help=(
+            "Ollama reasoning model (e.g. deepseek-r1:14b). When set, enables two-model mode: "
+            "the reasoning model plans and delegates code writing to --ollama-model."
+        ),
     )
     parser.add_argument(
         "--ollama-url",
@@ -492,15 +585,27 @@ def main():
 
     # ── Ollama path: no browser required ─────────────────────────────────────
     if args.llm == "ollama":
-        from browser_llm_agent.llm.ollama import create_chat
-
         mcp_manager = MCPManager()
         n = mcp_manager.load_and_connect(status_cb=lambda msg: print(c(msg, DIM)))
         if n:
             print(c(f"  {n} MCP server(s) ready\n", DIM))
 
-        chat = create_chat(model=args.ollama_model, base_url=args.ollama_url)
-        print(c(f"  Using Ollama model '{args.ollama_model}' at {args.ollama_url}\n", DIM))
+        if args.ollama_reasoning_model:
+            from browser_llm_agent.llm.ollama import create_reasoning_chat
+            chat = create_reasoning_chat(
+                reasoning_model=args.ollama_reasoning_model,
+                coder_model=args.ollama_model,
+                base_url=args.ollama_url,
+            )
+            print(c(f"  Ollama two-model mode:", DIM))
+            print(c(f"    reasoning: {args.ollama_reasoning_model}", DIM))
+            print(c(f"    coder:     {args.ollama_model}", DIM))
+            print(c(f"    url:       {args.ollama_url}\n", DIM))
+        else:
+            from browser_llm_agent.llm.ollama import create_chat
+            chat = create_chat(model=args.ollama_model, base_url=args.ollama_url)
+            print(c(f"  Using Ollama model '{args.ollama_model}' at {args.ollama_url}\n", DIM))
+
         try:
             interactive_shell(
                 pages={},

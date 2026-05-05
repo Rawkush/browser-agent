@@ -47,6 +47,14 @@ Debugging methodology:
 3. EXPERIMENT: verify or falsify the theory cheaply.
 4. FIX: make a targeted change.
 5. VERIFY: rerun the reproduction, tests, build, or equivalent check.
+6. ITERATE: if verification fails, treat the failure output as new evidence and return to step 2 with a revised hypothesis. Do not repeat the same approach — something new was learned.
+
+Verification is mandatory — not optional:
+- A fix is not complete until a command or test run confirms it. Never describe a fix as working without showing actual output.
+- After every edit, immediately run the smallest verification that can confirm or deny success (tests, build, focused reproduction, etc.).
+- If verification fails: read the error output carefully, revise your hypothesis, and test again. Keep cycling until verification passes.
+- You may not say "this should work", "the issue is fixed", or equivalent without having run and shown the evidence.
+- If verification is genuinely impossible (broken environment, no test suite, missing credentials), explain exactly what blocked it — do not silently skip it.
 
 Advanced debugging:
 - ISOLATE: extract suspect logic into a minimal script when framework context may be hiding the bug.

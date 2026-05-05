@@ -98,6 +98,7 @@ _CLAUDE_CLIENT = None
 _MCP_MANAGER: MCPManager | None = None
 _OLLAMA_CHATS: dict[str, object] = {}
 _OLLAMA_MODEL = "qwen2.5-coder:14b"
+_OLLAMA_REASONING_MODEL = ""
 _OLLAMA_URL = "http://localhost:11434"
 
 
@@ -250,12 +251,19 @@ def run_claude_agent(user_message: str, conv_id: str,
 def run_ollama_agent(user_message: str, conv_id: str,
                      request_system: str, mcp_manager: MCPManager | None = None) -> str:
     """Run an Ollama-backed text tool loop without Playwright."""
-    from browser_llm_agent.llm.ollama import create_chat
-
     conv = _get_conversation(conv_id)
     chat = _OLLAMA_CHATS.get(conv_id)
     if chat is None:
-        chat = create_chat(model=_OLLAMA_MODEL, base_url=_OLLAMA_URL)
+        if _OLLAMA_REASONING_MODEL:
+            from browser_llm_agent.llm.ollama import create_reasoning_chat
+            chat = create_reasoning_chat(
+                reasoning_model=_OLLAMA_REASONING_MODEL,
+                coder_model=_OLLAMA_MODEL,
+                base_url=_OLLAMA_URL,
+            )
+        else:
+            from browser_llm_agent.llm.ollama import create_chat
+            chat = create_chat(model=_OLLAMA_MODEL, base_url=_OLLAMA_URL)
         _OLLAMA_CHATS[conv_id] = chat
 
     system = _compose_system_prompt(build_system_prompt(mcp_manager), request_system)
@@ -426,7 +434,7 @@ class RawAgentHandler(BaseHTTPRequestHandler):
 # ── Entry point (standalone server) ──────────────────────────────────────────
 
 def main():
-    global _CLAUDE_CLIENT, _MCP_MANAGER, _OLLAMA_MODEL, _OLLAMA_URL
+    global _CLAUDE_CLIENT, _MCP_MANAGER, _OLLAMA_MODEL, _OLLAMA_REASONING_MODEL, _OLLAMA_URL
 
     parser = argparse.ArgumentParser(
         description="rawagent API server — Claude Code CLI backed by rawagent"
@@ -435,6 +443,14 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--ollama-model", default=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"))
+    parser.add_argument(
+        "--ollama-reasoning-model",
+        default=os.environ.get("OLLAMA_REASONING_MODEL", ""),
+        help=(
+            "Ollama reasoning model (e.g. deepseek-r1:14b). When set, enables two-model mode: "
+            "the reasoning model plans and delegates code writing to --ollama-model."
+        ),
+    )
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
     args = parser.parse_args()
 
@@ -450,6 +466,7 @@ def main():
 
     if args.llm == "ollama":
         _OLLAMA_MODEL = args.ollama_model
+        _OLLAMA_REASONING_MODEL = args.ollama_reasoning_model
         _OLLAMA_URL = args.ollama_url
         RawAgentHandler.use_claude_backend = False
         RawAgentHandler.use_ollama_backend = True
@@ -457,7 +474,10 @@ def main():
         http_server = HTTPServer((args.host, args.port), RawAgentHandler)
 
         print(c(f"\n  Ready (Ollama mode — no browser needed).", BOLD))
-        print(c(f"  model: {_OLLAMA_MODEL}  url: {_OLLAMA_URL}", GREEN))
+        if _OLLAMA_REASONING_MODEL:
+            print(c(f"  reasoning: {_OLLAMA_REASONING_MODEL}  coder: {_OLLAMA_MODEL}  url: {_OLLAMA_URL}", GREEN))
+        else:
+            print(c(f"  model: {_OLLAMA_MODEL}  url: {_OLLAMA_URL}", GREEN))
         print(c(f"  ANTHROPIC_BASE_URL=http://{args.host}:{args.port} ANTHROPIC_API_KEY=rawagent claude", GREEN))
         print(c("─" * 60, BLUE) + "\n")
 
