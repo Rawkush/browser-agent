@@ -39,15 +39,21 @@ _RESET  = "\033[0m"
 # ── Reasoning-model system prompt ──────────────────────────────────────────────
 
 _REASONING_SYSTEM = (
-    "You are a reasoning agent. Think through problems carefully before responding.\n\n"
-    "When you need to write or generate code, output a code delegation block:\n\n"
+    "You are a reasoning agent. Think through problems carefully before acting.\n\n"
+    "You have access to file, shell, browser, and other tools. "
+    "Always use JSON tool calls to perform real operations — writing files, running commands, editing, etc.\n\n"
+    "When a task requires writing non-trivial code (algorithms, complex logic, multi-function modules), "
+    "you may request the code content from a specialized coding model before putting it in a tool call:\n\n"
     "<write_code>\n"
-    "Describe precisely what code to write: language, purpose, function signatures,\n"
-    "inputs/outputs, and any constraints or requirements.\n"
+    "Describe precisely what to implement: language, purpose, function signatures,\n"
+    "inputs/outputs, and any constraints. The code text will be returned to you.\n"
     "</write_code>\n\n"
-    "A specialized coding model will write the code and return it to you.\n"
-    "You can then incorporate it into your final response.\n"
-    "For answers that do not require code, respond directly."
+    "After receiving code from the coding model, use the appropriate tool call "
+    "(e.g., write_file) to actually create or modify the file.\n\n"
+    "Rules:\n"
+    "- <write_code> produces code TEXT only — you must still emit a write_file tool call to save it.\n"
+    "- For simple code (a function that adds two numbers, a small script), write it directly in the tool call — no delegation needed.\n"
+    "- Tool calls are mandatory for all file and shell operations. Never just describe what you would do."
 )
 
 

@@ -196,32 +196,39 @@ def _extract_json_objects(text: str) -> list[dict]:
 
 
 def parse_tool_calls(text: str) -> list[dict]:
-    calls = []
+    seen: set[str] = set()
+    calls: list[dict] = []
+
+    def _add(obj: dict) -> None:
+        key = json.dumps(obj, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            calls.append(obj)
 
     # 1. explicit ```tool ... ``` blocks
     for m in re.findall(r"```tool\s*(.*?)```", text, re.DOTALL):
         try:
-            calls.append(json.loads(m.strip()))
+            _add(json.loads(m.strip()))
         except json.JSONDecodeError:
             pass
 
-    # 2. any fenced block containing "name":
-    if not calls:
-        for m in re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL):
-            stripped = m.strip()
-            if '"name"' in stripped:
-                try:
-                    obj = json.loads(stripped)
-                    if isinstance(obj, dict) and "name" in obj:
-                        calls.append(obj)
-                except json.JSONDecodeError:
-                    pass
+    # 2. any fenced block containing "name": — runs regardless of step 1 results
+    for m in re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL):
+        stripped = m.strip()
+        if '"name"' in stripped:
+            try:
+                obj = json.loads(stripped)
+                if isinstance(obj, dict) and "name" in obj:
+                    _add(obj)
+            except json.JSONDecodeError:
+                pass
 
-    # 3. bracket-match any bare JSON object with a "name" key
-    if not calls:
-        for obj in _extract_json_objects(text):
-            if "name" in obj:
-                calls.append(obj)
+    # 3. bracket-match any bare JSON object with a "name" key — catches tool calls
+    #    whose opening fence was stripped by inner_text() but closing fence was not,
+    #    or that were emitted without any fencing at all.
+    for obj in _extract_json_objects(text):
+        if "name" in obj:
+            _add(obj)
 
     return calls
 
@@ -254,6 +261,18 @@ def execute_tool(call: dict) -> str:
         return edit_file(path, old, new)
     elif name == "list_dir":
         return list_dir(call.get("path", "."))
+    elif name == "node_exec":
+        code = call.get("code")
+        if not code:
+            return "Error: node_exec requires a 'code' field"
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(suffix=".js", mode="w", delete=False, encoding="utf-8") as f:
+            f.write(code)
+            tmp = f.name
+        try:
+            return run_bash(f"node {tmp}")
+        finally:
+            _os.unlink(tmp)
     else:
         return f"Error: unknown tool '{name}'"
 
@@ -297,6 +316,42 @@ def print_header(llm_name: str):
 
 # ── Agent turn ────────────────────────────────────────────────────────────────
 
+_NUDGE_MSG = (
+    "You described what you intend to do but did not emit any tool calls. "
+    "Do NOT describe actions — perform them. Emit the ```tool\\n{...}\\n``` "
+    "blocks RIGHT NOW for each operation you just described."
+)
+
+_ORCHESTRATOR_PROMPT = (
+    "You are a intent classifier. Given an AI assistant's response, decide whether "
+    "it DESCRIBES actions it intends to take (like 'I will stage the files', "
+    "'Let me commit', 'I'll run the command') WITHOUT actually emitting tool call "
+    "JSON blocks (```tool {...} ```).\n\n"
+    "Reply with ONLY one word:\n"
+    "- UNFULFILLED — if the response promises/describes actions but has no tool call blocks\n"
+    "- COMPLETE — if the response either contains tool calls OR is just a normal answer/explanation "
+    "with no promised actions\n\n"
+    "Response to classify:\n"
+)
+
+
+def _has_unfulfilled_intent(response: str) -> bool:
+    """Use a small local LLM to detect if the response describes actions
+    without actually emitting tool calls."""
+    try:
+        import ollama as _ollama
+        result = _ollama.chat(
+            model="qwen2.5-coder:1.5b",
+            messages=[{"role": "user", "content": _ORCHESTRATOR_PROMPT + response}],
+            options={"temperature": 0, "num_predict": 10},
+        )
+        verdict = result["message"]["content"].strip().upper()
+        return "UNFULFILLED" in verdict
+    except Exception:
+        # If ollama isn't running or model not available, skip the check
+        return False
+
+
 def agent_turn(send_fn, user_message: str, is_first_message: bool):
     """Send a message and handle the full tool loop until LLM stops calling tools."""
     if is_first_message:
@@ -314,6 +369,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
 
     max_tool_turns = 20
     turn = 0
+    nudge_attempts = 0
 
     while turn < max_tool_turns:
         tool_calls = parse_tool_calls(response)
@@ -322,6 +378,20 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool):
         print_llm(response)
 
         if not tool_calls:
+            # If the LLM described actions without emitting tool calls,
+            # re-prompt it to actually execute instead of just describing.
+            if nudge_attempts < 2 and _has_unfulfilled_intent(response):
+                nudge_attempts += 1
+                print(c("  [nudging LLM to emit tool calls...]", DIM))
+                try:
+                    print(c("  thinking...", DIM), end="\r")
+                    response = send_fn(_NUDGE_MSG)
+                    print("              ", end="\r")
+                except Exception as e:
+                    print(c(f"\n  [browser error on nudge: {e}]\n", RED))
+                    break
+                turn += 1
+                continue
             break
 
         # execute each tool call

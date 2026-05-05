@@ -570,10 +570,10 @@ def main():
     )
     parser.add_argument(
         "--ollama-reasoning-model",
-        default=os.environ.get("OLLAMA_REASONING_MODEL", ""),
+        default=os.environ.get("OLLAMA_REASONING_MODEL", "qwen3:14b"),
         help=(
-            "Ollama reasoning model (e.g. deepseek-r1:14b). When set, enables two-model mode: "
-            "the reasoning model plans and delegates code writing to --ollama-model."
+            "Ollama reasoning model (default: qwen3:14b). The reasoning model plans and "
+            "delegates code writing to --ollama-model. Set to empty string to disable."
         ),
     )
     parser.add_argument(
