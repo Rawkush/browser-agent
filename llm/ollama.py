@@ -1,6 +1,6 @@
 import ollama
 
-def send_message(model_name: str, message: str) -> str:
+def send_message(model_name: str = "qwen2.5-coder:14b", message: str = "") -> str:
     """Simple wrapper for Ollama local API."""
     try:
         response = ollama.chat(model=model_name, messages=[

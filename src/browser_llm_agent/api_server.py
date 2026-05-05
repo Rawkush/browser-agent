@@ -97,7 +97,7 @@ _REQUEST_QUEUE: queue.Queue = queue.Queue()
 _CLAUDE_CLIENT = None
 _MCP_MANAGER: MCPManager | None = None
 _OLLAMA_CHATS: dict[str, object] = {}
-_OLLAMA_MODEL = "llama3"
+_OLLAMA_MODEL = "qwen2.5-coder:14b"
 _OLLAMA_URL = "http://localhost:11434"
 
 
@@ -434,7 +434,7 @@ def main():
     parser.add_argument("--llm", choices=["chatgpt", "gemini", "claude", "ollama"], default="gemini")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--ollama-model", default=os.environ.get("OLLAMA_MODEL", "llama3"))
+    parser.add_argument("--ollama-model", default=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"))
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
     args = parser.parse_args()
 

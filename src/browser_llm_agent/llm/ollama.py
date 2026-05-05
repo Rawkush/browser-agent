@@ -9,7 +9,7 @@ import urllib.request
 
 
 class OllamaChat:
-    def __init__(self, model: str = "llama3", base_url: str = "http://localhost:11434"):
+    def __init__(self, model: str = "qwen2.5-coder:14b", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.messages: list[dict[str, str]] = []
@@ -52,5 +52,5 @@ class OllamaChat:
         return content
 
 
-def create_chat(model: str = "llama3", base_url: str = "http://localhost:11434") -> OllamaChat:
+def create_chat(model: str = "qwen2.5-coder:14b", base_url: str = "http://localhost:11434") -> OllamaChat:
     return OllamaChat(model=model, base_url=base_url)

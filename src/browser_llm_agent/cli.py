@@ -480,8 +480,8 @@ def main():
     )
     parser.add_argument(
         "--ollama-model",
-        default=os.environ.get("OLLAMA_MODEL", "llama3"),
-        help="Ollama model to use with --llm ollama (default: OLLAMA_MODEL or llama3).",
+        default=os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:14b"),
+        help="Ollama model to use with --llm ollama (default: OLLAMA_MODEL or qwen2.5-coder:14b).",
     )
     parser.add_argument(
         "--ollama-url",
