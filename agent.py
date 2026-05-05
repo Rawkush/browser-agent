@@ -340,15 +340,20 @@ def _has_unfulfilled_intent(response: str) -> bool:
     without actually emitting tool calls."""
     try:
         import ollama as _ollama
+        preview = response[:500] if len(response) > 500 else response
+        print(c("  [orchestrator] classifying response intent...", DIM))
         result = _ollama.chat(
             model="qwen2.5-coder:1.5b",
-            messages=[{"role": "user", "content": _ORCHESTRATOR_PROMPT + response}],
+            messages=[{"role": "user", "content": _ORCHESTRATOR_PROMPT + preview}],
             options={"temperature": 0, "num_predict": 10},
         )
         verdict = result["message"]["content"].strip().upper()
-        return "UNFULFILLED" in verdict
-    except Exception:
-        # If ollama isn't running or model not available, skip the check
+        is_unfulfilled = "UNFULFILLED" in verdict
+        label = "UNFULFILLED" if is_unfulfilled else "COMPLETE"
+        print(c(f"  [orchestrator] verdict: {label}", DIM))
+        return is_unfulfilled
+    except Exception as e:
+        print(c(f"  [orchestrator] unavailable ({e}), skipping check", DIM))
         return False
 
 

@@ -264,10 +264,12 @@ def run_ollama_agent(user_message: str, conv_id: str,
         else:
             from browser_llm_agent.llm.ollama import create_chat
             chat = create_chat(model=_OLLAMA_MODEL, base_url=_OLLAMA_URL)
+        # Inject system prompt into the proper system role instead of the first user message
+        system = _compose_system_prompt(build_system_prompt(mcp_manager), request_system)
+        chat.set_system(system)
         _OLLAMA_CHATS[conv_id] = chat
 
-    system = _compose_system_prompt(build_system_prompt(mcp_manager), request_system)
-    answer = run_agent(chat.send_message, user_message, conv.is_first_message, system, mcp_manager)
+    answer = run_agent(chat.send_message, user_message, conv.is_first_message, "", mcp_manager)
     conv.is_first_message = False
     return answer
 

@@ -298,7 +298,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool,
     the turn ends.
     """
     turn_message = build_turn_message(user_message)
-    if is_first_message:
+    if is_first_message and system_prompt:
         full_message = f"{system_prompt}\n\n{turn_message}"
     else:
         full_message = turn_message
@@ -485,14 +485,16 @@ def claude_shell(mcp_manager: MCPManager | None = None):
 # ── Main interactive shell ────────────────────────────────────────────────────
 
 def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str,
-                      mcp_manager: MCPManager | None = None):
+                      mcp_manager: MCPManager | None = None,
+                      system_prompt: str | None = None):
     current_llm = start_llm
     send_fn = send_fns[current_llm]
     new_conv_fn = new_conv_fns[current_llm]
     is_first_message = True
 
-    # Build system prompt once — auto-generates tool docs from registry
-    system_prompt = build_system_prompt(mcp_manager)
+    # Build system prompt once (or use the pre-injected one for Ollama mode)
+    if system_prompt is None:
+        system_prompt = build_system_prompt(mcp_manager)
 
     print_header(current_llm)
 
@@ -606,6 +608,11 @@ def main():
             chat = create_chat(model=args.ollama_model, base_url=args.ollama_url)
             print(c(f"  Using Ollama model '{args.ollama_model}' at {args.ollama_url}\n", DIM))
 
+        # Inject system prompt into the chat's system message so it arrives in the
+        # correct role rather than buried inside the first user message.
+        ollama_system = build_system_prompt(mcp_manager)
+        chat.set_system(ollama_system)
+
         try:
             interactive_shell(
                 pages={},
@@ -613,6 +620,7 @@ def main():
                 new_conv_fns={"ollama": chat.new_conversation},
                 start_llm="ollama",
                 mcp_manager=mcp_manager,
+                system_prompt="",  # already set inside chat
             )
         finally:
             mcp_manager.stop_all()

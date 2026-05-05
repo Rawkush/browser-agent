@@ -109,10 +109,16 @@ class OllamaChat:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.max_context_chars = max_context_chars
+        self._system: str = ""
         self.messages: list[dict] = []
 
+    def set_system(self, system_prompt: str) -> None:
+        """Set the system message. Call before the first send_message."""
+        self._system = system_prompt
+        self.messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+
     def new_conversation(self):
-        self.messages.clear()
+        self.messages = [{"role": "system", "content": self._system}] if self._system else []
 
     # ── compaction ────────────────────────────────────────────────────────────
 
@@ -202,10 +208,18 @@ class OllamaReasoningChat:
         self.base_url = base_url.rstrip("/")
         self.max_delegations = max_delegations
         self.max_context_chars = max_context_chars
+        self._system_extra: str = ""
         self.messages: list[dict] = [{"role": "system", "content": _REASONING_SYSTEM}]
 
+    def set_system(self, extra: str) -> None:
+        """Extend the system message with tool docs and agent instructions. Call before first send."""
+        self._system_extra = extra
+        combined = _REASONING_SYSTEM + "\n\n" + extra if extra else _REASONING_SYSTEM
+        self.messages = [{"role": "system", "content": combined}]
+
     def new_conversation(self):
-        self.messages = [{"role": "system", "content": _REASONING_SYSTEM}]
+        combined = _REASONING_SYSTEM + "\n\n" + self._system_extra if self._system_extra else _REASONING_SYSTEM
+        self.messages = [{"role": "system", "content": combined}]
 
     # ── compaction ────────────────────────────────────────────────────────────
 
