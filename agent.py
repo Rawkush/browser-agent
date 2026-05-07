@@ -338,25 +338,29 @@ _ORCHESTRATOR_PROMPT = (
 )
 
 
-def _has_unfulfilled_intent(response: str, orchestrator_send) -> bool:
-    """Use a browser LLM (separate tab) to detect if the response describes
-    actions without actually emitting tool calls."""
-    if orchestrator_send is None:
-        return False
+def _has_unfulfilled_intent(response: str) -> bool:
+    """Use a small local LLM to detect if the response describes actions
+    without actually emitting tool calls."""
     try:
+        import ollama as _ollama
         preview = response[:500] if len(response) > 500 else response
         print(c("  [orchestrator] classifying response intent...", DIM))
-        verdict = orchestrator_send(_ORCHESTRATOR_PROMPT + preview).strip().upper()
+        result = _ollama.chat(
+            model="qwen2.5-coder:7b",
+            messages=[{"role": "user", "content": _ORCHESTRATOR_PROMPT + preview}],
+            options={"temperature": 0, "num_predict": 10},
+        )
+        verdict = result["message"]["content"].strip().upper()
         is_unfulfilled = "UNFULFILLED" in verdict
         label = "UNFULFILLED" if is_unfulfilled else "COMPLETE"
         print(c(f"  [orchestrator] verdict: {label}", DIM))
         return is_unfulfilled
     except Exception as e:
-        print(c(f"  [orchestrator] error ({e}), skipping check", DIM))
+        print(c(f"  [orchestrator] unavailable ({e}), skipping check", DIM))
         return False
 
 
-def agent_turn(send_fn, user_message: str, is_first_message: bool, orchestrator_send=None):
+def agent_turn(send_fn, user_message: str, is_first_message: bool):
     """Send a message and handle the full tool loop until LLM stops calling tools."""
     if is_first_message:
         full_message = f"{SYSTEM_PROMPT}\n\n{user_message}"
@@ -384,7 +388,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool, orchestrator_
         if not tool_calls:
             # If the LLM described actions without emitting tool calls,
             # re-prompt it to actually execute instead of just describing.
-            if nudge_attempts < 2 and _has_unfulfilled_intent(response, orchestrator_send):
+            if nudge_attempts < 2 and _has_unfulfilled_intent(response):
                 nudge_attempts += 1
                 print(c("  [nudging LLM to emit tool calls...]", DIM))
                 try:
@@ -429,7 +433,7 @@ def agent_turn(send_fn, user_message: str, is_first_message: bool, orchestrator_
 
 # ── Main interactive shell ────────────────────────────────────────────────────
 
-def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str, orchestrator_send=None):
+def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm: str):
     current_llm = start_llm
     send_fn = send_fns[current_llm]
     new_conv_fn = new_conv_fns[current_llm]
@@ -482,7 +486,7 @@ def interactive_shell(pages: dict, send_fns: dict, new_conv_fns: dict, start_llm
             continue
 
         # ── normal message ────────────────────────────────────────────────
-        agent_turn(send_fn, user_input, is_first_message, orchestrator_send)
+        agent_turn(send_fn, user_input, is_first_message)
         is_first_message = False
 
 
@@ -534,18 +538,8 @@ def main():
 
         start_llm = "chatgpt" if args.llm == "chatgpt" else "gemini"
 
-        # Open a separate Gemini tab as the orchestrator brain
-        orchestrator_send = None
         try:
-            print(c("  Opening orchestrator tab (Gemini)...", DIM))
-            orch_page = open_gemini(browser)
-            orchestrator_send = lambda msg, pg=orch_page: gemini_send(pg, msg)
-            print(c("  Orchestrator ready.", DIM))
-        except Exception as e:
-            print(c(f"  [orchestrator tab failed: {e}, nudging disabled]", DIM))
-
-        try:
-            interactive_shell(pages, send_fns, new_conv_fns, start_llm, orchestrator_send)
+            interactive_shell(pages, send_fns, new_conv_fns, start_llm)
         finally:
             browser.close()
             print(c("\nBye.\n", DIM))
